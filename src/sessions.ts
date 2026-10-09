@@ -16,6 +16,7 @@ interface RelaySession {
 }
 
 interface PeerInfo {
+  index: number;
   address: string | null; // null until first UDP packet
   port: number | null;
   lastSeen: number;
@@ -48,8 +49,9 @@ function generatePeerSecret(): string {
 export function createSession(
   projectId: string,
   maxPlayers: number,
-  requestedCode?: string
-): { code: string; password: string; sessionToken: number; peerSecret: string } | "conflict" | null {
+  requestedCode?: string,
+  requestedPassword?: string
+): { code: string; password: string; sessionToken: number; peerSecret: string; peerIndex: number } | "conflict" | null {
   let code: string;
   if (requestedCode !== undefined) {
     if (sessions.has(requestedCode)) return "conflict";
@@ -62,13 +64,13 @@ export function createSession(
     } while (sessions.has(code));
   }
 
-  const password = randomString(PASSWORD_CHARS, 8);
+  const password = requestedPassword ?? randomString(PASSWORD_CHARS, 8);
   const sessionToken = generateToken();
   const peerSecret = generatePeerSecret();
   const now = Date.now();
 
   const peers = new Map<string, PeerInfo>();
-  peers.set(peerSecret, { address: null, port: null, lastSeen: now });
+  peers.set(peerSecret, { index: 0, address: null, port: null, lastSeen: now });
 
   sessions.set(code, {
     sessionToken,
@@ -81,24 +83,25 @@ export function createSession(
   });
   tokenToCode.set(sessionToken, code);
 
-  return { code, password, sessionToken, peerSecret };
+  return { code, password, sessionToken, peerSecret, peerIndex: 0 };
 }
 
 export function joinSession(
   code: string,
   password: string,
   projectId: string
-): { sessionToken: number; peerSecret: string } | null {
+): { sessionToken: number; peerSecret: string; peerIndex: number } | null {
   const session = sessions.get(code);
   if (!session || session.projectId !== projectId) return null;
   if (session.passwordHash !== hashPassword(password)) return null;
   if (session.peers.size >= session.maxPlayers) return null;
 
+  const peerIndex = session.peers.size;
   const peerSecret = generatePeerSecret();
-  session.peers.set(peerSecret, { address: null, port: null, lastSeen: Date.now() });
+  session.peers.set(peerSecret, { index: peerIndex, address: null, port: null, lastSeen: Date.now() });
   session.lastActivity = Date.now();
 
-  return { sessionToken: session.sessionToken, peerSecret };
+  return { sessionToken: session.sessionToken, peerSecret, peerIndex };
 }
 
 export function getActiveSessionCount(projectId: string): number {
@@ -115,7 +118,7 @@ export function registerAndGetPeers(
   peerSecret: string,
   address: string,
   port: number
-): Array<{ address: string; port: number }> | null {
+): { senderIndex: number; peers: Array<{ address: string; port: number }> } | null {
   const code = tokenToCode.get(sessionToken);
   if (!code) return null;
 
@@ -138,7 +141,7 @@ export function registerAndGetPeers(
   }
 
   logger.debug({ sessionToken, address, port }, "Peer packet received");
-  return others;
+  return { senderIndex: peer.index, peers: others };
 }
 
 export function cleanup(): void {

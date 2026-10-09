@@ -9,17 +9,32 @@ export function startRelay(): void {
   const server = dgram.createSocket("udp4");
 
   server.on("message", (msg, rinfo) => {
-    if (msg.length < 21) return; // 4 + 16 + 1 minimum
+    logger.debug({ bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet received");
+
+    if (msg.length < 20) {
+      logger.warn({ bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet too short, dropping");
+      return;
+    }
 
     const sessionToken = msg.readUInt32BE(0);
     const peerSecret = msg.subarray(4, 20).toString("hex");
     const payload = msg.subarray(20);
 
-    const peers = registerAndGetPeers(sessionToken, peerSecret, rinfo.address, rinfo.port);
-    if (!peers) return; // unknown session or invalid secret — drop silently
+    const result = registerAndGetPeers(sessionToken, peerSecret, rinfo.address, rinfo.port);
+    if (!result) {
+      logger.warn({ sessionToken, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet dropped: unknown session or invalid secret");
+      return;
+    }
 
-    for (const peer of peers) {
-      server.send(payload, peer.port, peer.address, (err) => {
+    logger.debug({ sessionToken, senderIndex: result.senderIndex, peers: result.peers.length, payloadBytes: payload.length }, "Forwarding UDP packet");
+
+    // Prepend 4-byte sender index (big-endian) so receivers can identify the source peer
+    const forwarded = Buffer.allocUnsafe(4 + payload.length);
+    forwarded.writeUInt32BE(result.senderIndex, 0);
+    payload.copy(forwarded, 4);
+
+    for (const peer of result.peers) {
+      server.send(forwarded, peer.port, peer.address, (err) => {
         if (err) logger.warn({ err, peer }, "Failed to forward packet");
       });
     }
