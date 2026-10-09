@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+projects.yaml
+fly.toml
+.idea/
+*.iml
+.DS_Store
