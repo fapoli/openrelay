@@ -1,4 +1,4 @@
 projects:
-  - id: example-project
-    maxSessions: 100
-    maxPlayersPerSession: 16
+  - id: pongwars
+    maxSessions: 50
+    maxPlayersPerSession: 4
