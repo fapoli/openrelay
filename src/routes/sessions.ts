@@ -7,16 +7,22 @@ import { ApiError } from "../errors/ApiError.js";
 
 const router = express.Router();
 
+const CreateSchema = z.object({
+  code: z.string().length(6).regex(/^[A-Z0-9]+$/).optional(),
+});
+
 router.post("/sessions", requireApiKey, (_req: Request, res: Response) => {
   const project = _req.project!;
+  const { code: requestedCode } = parseBody(CreateSchema, _req.body);
 
   const active = getActiveSessionCount(project.id);
   if (active >= project.maxSessions) {
     throw new ApiError(429, "Max sessions reached for this project");
   }
 
-  const result = createSession(project.id, project.maxPlayersPerSession);
-  if (!result) throw new ApiError(500, "Failed to create session");
+  const result = createSession(project.id, project.maxPlayersPerSession, requestedCode);
+  if (result === "conflict") throw new ApiError(409, "Code already in use");
+  if (result === null) throw new ApiError(500, "Failed to create session");
 
   return res.status(201).json({
     code: result.code,

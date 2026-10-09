@@ -47,14 +47,20 @@ function generatePeerSecret(): string {
 
 export function createSession(
   projectId: string,
-  maxPlayers: number
-): { code: string; password: string; sessionToken: number; peerSecret: string } | null {
+  maxPlayers: number,
+  requestedCode?: string
+): { code: string; password: string; sessionToken: number; peerSecret: string } | "conflict" | null {
   let code: string;
-  let attempts = 0;
-  do {
-    code = randomString(CODE_CHARS, 6);
-    if (++attempts > 200) return null;
-  } while (sessions.has(code));
+  if (requestedCode !== undefined) {
+    if (sessions.has(requestedCode)) return "conflict";
+    code = requestedCode;
+  } else {
+    let attempts = 0;
+    do {
+      code = randomString(CODE_CHARS, 6);
+      if (++attempts > 200) return null;
+    } while (sessions.has(code));
+  }
 
   const password = randomString(PASSWORD_CHARS, 8);
   const sessionToken = generateToken();
