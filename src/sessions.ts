@@ -5,26 +5,25 @@ import logger from "./lib/logger.js";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
-interface GameSession {
+interface RelaySession {
   sessionToken: number;
   passwordHash: string;
   projectId: string;
   createdAt: number;
   lastActivity: number;
   maxPlayers: number;
+  peers: Map<string, PeerInfo>; // peerSecret (hex) -> peer info
 }
 
-interface Peer {
-  address: string;
-  port: number;
+interface PeerInfo {
+  address: string | null; // null until first UDP packet
+  port: number | null;
   lastSeen: number;
 }
 
 // code -> session
-const games = new Map<string, GameSession>();
-// sessionToken -> peers
-const peers = new Map<number, Peer[]>();
-// sessionToken -> code (reverse lookup for activity updates)
+const sessions = new Map<string, RelaySession>();
+// sessionToken -> code (reverse lookup)
 const tokenToCode = new Map<number, string>();
 
 function randomString(chars: string, length: number): string {
@@ -42,95 +41,117 @@ function generateToken(): number {
   return randomBytes(4).readUInt32BE(0);
 }
 
-export function createGame(
+function generatePeerSecret(): string {
+  return randomBytes(16).toString("hex");
+}
+
+export function createSession(
   projectId: string,
   maxPlayers: number
-): { code: string; password: string; sessionToken: number } | null {
+): { code: string; password: string; sessionToken: number; peerSecret: string } | null {
   let code: string;
   let attempts = 0;
   do {
     code = randomString(CODE_CHARS, 6);
     if (++attempts > 200) return null;
-  } while (games.has(code));
+  } while (sessions.has(code));
 
   const password = randomString(PASSWORD_CHARS, 8);
   const sessionToken = generateToken();
+  const peerSecret = generatePeerSecret();
   const now = Date.now();
 
-  games.set(code, {
+  const peers = new Map<string, PeerInfo>();
+  peers.set(peerSecret, { address: null, port: null, lastSeen: now });
+
+  sessions.set(code, {
     sessionToken,
     passwordHash: hashPassword(password),
     projectId,
     createdAt: now,
     lastActivity: now,
     maxPlayers,
+    peers,
   });
-  peers.set(sessionToken, []);
   tokenToCode.set(sessionToken, code);
 
-  return { code, password, sessionToken };
+  return { code, password, sessionToken, peerSecret };
 }
 
-export function joinGame(code: string, password: string, projectId: string): number | null {
-  const game = games.get(code);
-  if (!game || game.projectId !== projectId) return null;
-  if (game.passwordHash !== hashPassword(password)) return null;
+export function joinSession(
+  code: string,
+  password: string,
+  projectId: string
+): { sessionToken: number; peerSecret: string } | null {
+  const session = sessions.get(code);
+  if (!session || session.projectId !== projectId) return null;
+  if (session.passwordHash !== hashPassword(password)) return null;
+  if (session.peers.size >= session.maxPlayers) return null;
 
-  game.lastActivity = Date.now();
-  return game.sessionToken;
+  const peerSecret = generatePeerSecret();
+  session.peers.set(peerSecret, { address: null, port: null, lastSeen: Date.now() });
+  session.lastActivity = Date.now();
+
+  return { sessionToken: session.sessionToken, peerSecret };
 }
 
 export function getActiveSessionCount(projectId: string): number {
   let count = 0;
-  for (const g of games.values()) {
-    if (g.projectId === projectId) count++;
+  for (const s of sessions.values()) {
+    if (s.projectId === projectId) count++;
   }
   return count;
 }
 
-export function registerOrUpdatePeer(
+// Returns addresses of all other peers to forward to, or null if secret is invalid.
+export function registerAndGetPeers(
   sessionToken: number,
+  peerSecret: string,
   address: string,
   port: number
-): Peer[] | null {
-  const sessionPeers = peers.get(sessionToken);
-  if (!sessionPeers) return null;
-
-  const existing = sessionPeers.find((p) => p.address === address && p.port === port);
-  if (existing) {
-    existing.lastSeen = Date.now();
-  } else {
-    sessionPeers.push({ address, port, lastSeen: Date.now() });
-    logger.debug({ sessionToken, address, port }, "Peer registered");
-  }
-
+): Array<{ address: string; port: number }> | null {
   const code = tokenToCode.get(sessionToken);
-  if (code) {
-    const game = games.get(code);
-    if (game) game.lastActivity = Date.now();
+  if (!code) return null;
+
+  const session = sessions.get(code);
+  if (!session) return null;
+
+  const peer = session.peers.get(peerSecret);
+  if (!peer) return null; // unknown secret — reject
+
+  peer.address = address;
+  peer.port = port;
+  peer.lastSeen = Date.now();
+  session.lastActivity = Date.now();
+
+  const others: Array<{ address: string; port: number }> = [];
+  for (const [secret, p] of session.peers) {
+    if (secret !== peerSecret && p.address !== null && p.port !== null) {
+      others.push({ address: p.address, port: p.port });
+    }
   }
 
-  return sessionPeers;
+  logger.debug({ sessionToken, address, port }, "Peer packet received");
+  return others;
 }
 
 export function cleanup(): void {
   const now = Date.now();
   let expired = 0;
 
-  for (const [code, game] of games) {
-    if (now - game.lastActivity > config.sessionTtlMs) {
-      peers.delete(game.sessionToken);
-      tokenToCode.delete(game.sessionToken);
-      games.delete(code);
+  for (const [code, session] of sessions) {
+    if (now - session.lastActivity > config.sessionTtlMs) {
+      tokenToCode.delete(session.sessionToken);
+      sessions.delete(code);
       expired++;
+      continue;
     }
-  }
 
-  // Remove stale peers (no packet in 30s)
-  for (const [token, sessionPeers] of peers) {
-    const active = sessionPeers.filter((p) => now - p.lastSeen < 30_000);
-    if (active.length !== sessionPeers.length) {
-      peers.set(token, active);
+    // Remove peers inactive for 30s
+    for (const [secret, peer] of session.peers) {
+      if (now - peer.lastSeen > 30_000) {
+        session.peers.delete(secret);
+      }
     }
   }
 

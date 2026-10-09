@@ -1,5 +1,4 @@
 import { NextFunction, Request, Response } from "express";
-import "../types/express.js";
 import { projects } from "../config.js";
 import { ApiError } from "../errors/ApiError.js";
 

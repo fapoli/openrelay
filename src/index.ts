@@ -5,7 +5,7 @@ import cors from "cors";
 import { pinoHttp } from "pino-http";
 import logger from "./lib/logger.js";
 import { config } from "./config.js";
-import gamesRouter from "./routes/games.js";
+import sessionsRouter from "./routes/sessions.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { startRelay } from "./relay.js";
 import { cleanup } from "./sessions.js";
@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(pinoHttp({ logger, redact: ["req.headers.authorization"] }));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
-app.use("/", gamesRouter);
+app.use("/", sessionsRouter);
 app.use(errorHandler);
 
 app.listen(config.portHttp, () => {

@@ -1,3 +1,4 @@
+import "express";
 import { Project } from "../config.js";
 
 declare global {
@@ -7,3 +8,5 @@ declare global {
     }
   }
 }
+
+export {};

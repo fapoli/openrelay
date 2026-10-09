@@ -1,24 +1,24 @@
 import dgram from "dgram";
 import { config } from "./config.js";
-import { registerOrUpdatePeer } from "./sessions.js";
+import { registerAndGetPeers } from "./sessions.js";
 import logger from "./lib/logger.js";
 
-// Packet format: [4 bytes sessionToken (uint32 BE)] [payload...]
+// Packet format: [4 bytes sessionToken (uint32 BE)] [16 bytes peerSecret (hex bytes)] [payload...]
 
 export function startRelay(): void {
   const server = dgram.createSocket("udp4");
 
   server.on("message", (msg, rinfo) => {
-    if (msg.length < 5) return; // need at least token + 1 byte payload
+    if (msg.length < 21) return; // 4 + 16 + 1 minimum
 
     const sessionToken = msg.readUInt32BE(0);
-    const payload = msg.subarray(4);
+    const peerSecret = msg.subarray(4, 20).toString("hex");
+    const payload = msg.subarray(20);
 
-    const sessionPeers = registerOrUpdatePeer(sessionToken, rinfo.address, rinfo.port);
-    if (!sessionPeers) return; // unknown session — drop
+    const peers = registerAndGetPeers(sessionToken, peerSecret, rinfo.address, rinfo.port);
+    if (!peers) return; // unknown session or invalid secret — drop silently
 
-    for (const peer of sessionPeers) {
-      if (peer.address === rinfo.address && peer.port === rinfo.port) continue;
+    for (const peer of peers) {
       server.send(payload, peer.port, peer.address, (err) => {
         if (err) logger.warn({ err, peer }, "Failed to forward packet");
       });
