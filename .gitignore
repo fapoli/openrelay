@@ -28,5 +28,3 @@ coverage/
 # TypeScript
 *.tsbuildinfo
 
-# openrelay
-projects.yaml

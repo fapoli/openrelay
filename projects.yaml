@@ -1,0 +1,4 @@
+projects:
+  - id: example-project
+    maxSessions: 100
+    maxPlayersPerSession: 16
