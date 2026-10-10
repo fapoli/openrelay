@@ -1,5 +1,7 @@
 # openrelay
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
 A self-hosted UDP relay server for peer-to-peer multiplayer games. Players connect with a short code and password — no IP addresses, no port forwarding, no accounts.
 
 ---
@@ -43,7 +45,7 @@ Edit `projects.yaml`:
 
 ```yaml
 projects:
-  - id: mygame
+  - id: example-game
     maxSessions: 100
     maxPlayersPerSession: 16
 ```
@@ -53,10 +55,10 @@ projects:
 Generate a secret key for each project (e.g. `openssl rand -hex 32`) and set it as an environment variable. The name is derived from the project `id`: uppercased, hyphens replaced with underscores, `_API_KEY` appended.
 
 ```bash
-MYGAME_API_KEY=$(openssl rand -hex 32)
+EXAMPLE_GAME_API_KEY=$(openssl rand -hex 32)
 ```
 
-So `my-game` → `MY_GAME_API_KEY`. Your game client uses this key in the `Authorization` header when calling the HTTP API.
+So `example-game` → `EXAMPLE_GAME_API_KEY`. Your game client uses this key in the `Authorization` header when calling the HTTP API.
 
 ### 3. Run
 
@@ -85,7 +87,7 @@ The server is a single Node.js process with no external dependencies. Deploy it 
 ```bash
 docker build -t openrelay .
 docker run -p 3000:3000 -p 7777:7777/udp \
-  -e MYGAME_API_KEY=your_secret_key \
+  -e EXAMPLE_GAME_API_KEY=your_secret_key \
   openrelay
 ```
 
@@ -114,7 +116,7 @@ All endpoints require `Authorization: Bearer <apiKey>`.
 POST /sessions
 Content-Type: application/json
 
-{ "code": "ROOM01" }   ← optional; server generates one if absent
+{ "code": "ROOM01", "password": "mypassword" }   ← both optional   ← optional; server generates one if absent
 ```
 
 Returns `409 Conflict` if the code is already in use.

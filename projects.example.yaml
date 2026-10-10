@@ -1,4 +1,0 @@
-projects:
-  - id: mygame
-    maxSessions: 100
-    maxPlayersPerSession: 16

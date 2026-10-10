@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { projects } from "../config.js";
+import { projects } from "../config/env.js";
 import { ApiError } from "../errors/ApiError.js";
 
 export function requireApiKey(req: Request, _res: Response, next: NextFunction): void {

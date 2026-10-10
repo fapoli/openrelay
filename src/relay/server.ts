@@ -1,7 +1,7 @@
 import dgram from "dgram";
-import { config } from "./config.js";
-import { registerAndGetPeers } from "./sessions.js";
-import logger from "./lib/logger.js";
+import { config } from "../config/env.js";
+import { registerAndGetPeers } from "../services/sessions.js";
+import logger from "../lib/logger.js";
 
 // Packet format: [4 bytes sessionToken (uint32 BE)] [16 bytes peerSecret (hex bytes)] [payload...]
 
@@ -9,10 +9,16 @@ export function startRelay(): void {
   const server = dgram.createSocket("udp4");
 
   server.on("message", (msg, rinfo) => {
-    logger.debug({ bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet received");
+    logger.debug(
+      { bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` },
+      "UDP packet received"
+    );
 
     if (msg.length < 20) {
-      logger.warn({ bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet too short, dropping");
+      logger.warn(
+        { bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` },
+        "UDP packet too short, dropping"
+      );
       return;
     }
 
@@ -22,11 +28,22 @@ export function startRelay(): void {
 
     const result = registerAndGetPeers(sessionToken, peerSecret, rinfo.address, rinfo.port);
     if (!result) {
-      logger.warn({ sessionToken, from: `${rinfo.address}:${rinfo.port}` }, "UDP packet dropped: unknown session or invalid secret");
+      logger.warn(
+        { sessionToken, from: `${rinfo.address}:${rinfo.port}` },
+        "UDP packet dropped: unknown session or invalid secret"
+      );
       return;
     }
 
-    logger.debug({ sessionToken, senderIndex: result.senderIndex, peers: result.peers.length, payloadBytes: payload.length }, "Forwarding UDP packet");
+    logger.debug(
+      {
+        sessionToken,
+        senderIndex: result.senderIndex,
+        peers: result.peers.length,
+        payloadBytes: payload.length,
+      },
+      "Forwarding UDP packet"
+    );
 
     // Prepend 4-byte sender index (big-endian) so receivers can identify the source peer
     const forwarded = Buffer.allocUnsafe(4 + payload.length);
@@ -45,7 +62,7 @@ export function startRelay(): void {
     server.close();
   });
 
-  server.bind(config.portUdp, () => {
-    logger.info({ port: config.portUdp }, "UDP relay listening");
+  server.bind(config.portUdp, config.udpBindHost, () => {
+    logger.info({ port: config.portUdp, host: config.udpBindHost }, "UDP relay listening");
   });
 }

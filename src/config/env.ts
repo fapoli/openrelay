@@ -1,7 +1,8 @@
+import { Project } from "../types/project.js";
 import { readFileSync } from "fs";
 import { load } from "js-yaml";
 import { z } from "zod";
-import logger from "./lib/logger.js";
+import logger from "../lib/logger.js";
 
 const ProjectYamlSchema = z.object({
   id: z.string(),
@@ -12,13 +13,6 @@ const ProjectYamlSchema = z.object({
 const ProjectsFileSchema = z.object({
   projects: z.array(ProjectYamlSchema),
 });
-
-export interface Project {
-  id: string;
-  apiKey: string;
-  maxSessions: number;
-  maxPlayersPerSession: number;
-}
 
 function loadProjects(): Map<string, Project> {
   const map = new Map<string, Project>();
@@ -55,5 +49,6 @@ export const projects = loadProjects();
 export const config = {
   portHttp: parseInt(process.env.PORT_HTTP ?? "3000"),
   portUdp: parseInt(process.env.PORT_UDP ?? "7777"),
+  udpBindHost: process.env.UDP_BIND_HOST ?? "0.0.0.0",
   sessionTtlMs: parseInt(process.env.SESSION_TTL_MS ?? "300000"),
 };
