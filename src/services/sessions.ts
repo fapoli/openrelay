@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "crypto";
-import { config } from "./config.js";
-import logger from "./lib/logger.js";
+import { config } from "../config/env.js";
+import logger from "../lib/logger.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";

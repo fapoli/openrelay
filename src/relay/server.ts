@@ -1,7 +1,7 @@
 import dgram from "dgram";
-import { config } from "./config.js";
-import { registerAndGetPeers } from "./sessions.js";
-import logger from "./lib/logger.js";
+import { config } from "../config/env.js";
+import { registerAndGetPeers } from "../services/sessions.js";
+import logger from "../lib/logger.js";
 
 // Packet format: [4 bytes sessionToken (uint32 BE)] [16 bytes peerSecret (hex bytes)] [payload...]
 

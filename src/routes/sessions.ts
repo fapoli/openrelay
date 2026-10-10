@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import { z } from "zod";
 import { requireApiKey } from "../middleware/requireApiKey.js";
 import { parseBody } from "../schemas/parse.js";
-import { createSession, joinSession, getActiveSessionCount } from "../sessions.js";
+import { createSession, joinSession, getActiveSessionCount } from "../services/sessions.js";
 import { ApiError } from "../errors/ApiError.js";
 
 const router = express.Router();

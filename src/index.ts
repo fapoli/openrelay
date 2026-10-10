@@ -4,11 +4,11 @@ import express from "express";
 import cors from "cors";
 import { pinoHttp } from "pino-http";
 import logger from "./lib/logger.js";
-import { config } from "./config.js";
+import { config } from "./config/env.js";
 import sessionsRouter from "./routes/sessions.js";
 import { errorHandler } from "./middleware/errorHandler.js";
-import { startRelay } from "./relay.js";
-import { cleanup } from "./sessions.js";
+import { startRelay } from "./relay/server.js";
+import { cleanup } from "./services/sessions.js";
 
 const app = express();
 app.use(cors());
