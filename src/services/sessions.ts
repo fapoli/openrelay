@@ -1,17 +1,20 @@
-import { RelaySession, PeerInfo } from "../types/session.js";
+import { PeerInfo } from "../types/session.js";
 import { randomBytes, createHash } from "crypto";
 import { config } from "../config/env.js";
 import logger from "../lib/logger.js";
+import {
+  fetchSession,
+  insertSession,
+  deleteSession,
+  hasSession,
+  fetchCodeByToken,
+  insertToken,
+  deleteToken,
+  fetchAllSessions,
+} from "../repositories/sessionsRepository.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
-
-
-
-// code -> session
-const sessions = new Map<string, RelaySession>();
-// sessionToken -> code (reverse lookup)
-const tokenToCode = new Map<number, string>();
 
 function randomString(chars: string, length: number): string {
   const bytes = randomBytes(length);
@@ -37,17 +40,20 @@ export function createSession(
   maxPlayers: number,
   requestedCode?: string,
   requestedPassword?: string
-): { code: string; password: string; sessionToken: number; peerSecret: string; peerIndex: number } | "conflict" | null {
+):
+  | { code: string; password: string; sessionToken: number; peerSecret: string; peerIndex: number }
+  | "conflict"
+  | null {
   let code: string;
   if (requestedCode !== undefined) {
-    if (sessions.has(requestedCode)) return "conflict";
+    if (hasSession(requestedCode)) return "conflict";
     code = requestedCode;
   } else {
     let attempts = 0;
     do {
       code = randomString(CODE_CHARS, 6);
       if (++attempts > 200) return null;
-    } while (sessions.has(code));
+    } while (hasSession(code));
   }
 
   const password = requestedPassword ?? randomString(PASSWORD_CHARS, 8);
@@ -58,7 +64,7 @@ export function createSession(
   const peers = new Map<string, PeerInfo>();
   peers.set(peerSecret, { index: 0, address: null, port: null, lastSeen: now });
 
-  sessions.set(code, {
+  insertSession(code, {
     sessionToken,
     passwordHash: hashPassword(password),
     projectId,
@@ -67,7 +73,7 @@ export function createSession(
     maxPlayers,
     peers,
   });
-  tokenToCode.set(sessionToken, code);
+  insertToken(sessionToken, code);
 
   logger.info({ projectId, code, maxPlayers }, "Session created");
   return { code, password, sessionToken, peerSecret, peerIndex: 0 };
@@ -78,14 +84,19 @@ export function joinSession(
   password: string,
   projectId: string
 ): { sessionToken: number; peerSecret: string; peerIndex: number } | null {
-  const session = sessions.get(code);
+  const session = fetchSession(code);
   if (!session || session.projectId !== projectId) return null;
   if (session.passwordHash !== hashPassword(password)) return null;
   if (session.peers.size >= session.maxPlayers) return null;
 
   const peerIndex = session.peers.size;
   const peerSecret = generatePeerSecret();
-  session.peers.set(peerSecret, { index: peerIndex, address: null, port: null, lastSeen: Date.now() });
+  session.peers.set(peerSecret, {
+    index: peerIndex,
+    address: null,
+    port: null,
+    lastSeen: Date.now(),
+  });
   session.lastActivity = Date.now();
 
   logger.info({ code, peerIndex }, "Peer joined session");
@@ -94,27 +105,26 @@ export function joinSession(
 
 export function getActiveSessionCount(projectId: string): number {
   let count = 0;
-  for (const s of sessions.values()) {
+  for (const [, s] of fetchAllSessions()) {
     if (s.projectId === projectId) count++;
   }
   return count;
 }
 
-// Returns addresses of all other peers to forward to, or null if secret is invalid.
 export function registerAndGetPeers(
   sessionToken: number,
   peerSecret: string,
   address: string,
   port: number
 ): { senderIndex: number; peers: Array<{ address: string; port: number }> } | null {
-  const code = tokenToCode.get(sessionToken);
+  const code = fetchCodeByToken(sessionToken);
   if (!code) return null;
 
-  const session = sessions.get(code);
+  const session = fetchSession(code);
   if (!session) return null;
 
   const peer = session.peers.get(peerSecret);
-  if (!peer) return null; // unknown secret — reject
+  if (!peer) return null;
 
   peer.address = address;
   peer.port = port;
@@ -136,15 +146,14 @@ export function cleanup(): void {
   const now = Date.now();
   let expired = 0;
 
-  for (const [code, session] of sessions) {
+  for (const [code, session] of fetchAllSessions()) {
     if (now - session.lastActivity > config.sessionTtlMs) {
-      tokenToCode.delete(session.sessionToken);
-      sessions.delete(code);
+      deleteToken(session.sessionToken);
+      deleteSession(code);
       expired++;
       continue;
     }
 
-    // Remove peers inactive for 30s
     for (const [secret, peer] of session.peers) {
       if (now - peer.lastSeen > 30_000) {
         session.peers.delete(secret);

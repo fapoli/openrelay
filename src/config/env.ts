@@ -2,7 +2,7 @@ import { Project } from "../types/project.js";
 import { readFileSync } from "fs";
 import { load } from "js-yaml";
 import { z } from "zod";
-import logger from "./lib/logger.js";
+import logger from "../lib/logger.js";
 
 const ProjectYamlSchema = z.object({
   id: z.string(),
@@ -13,7 +13,6 @@ const ProjectYamlSchema = z.object({
 const ProjectsFileSchema = z.object({
   projects: z.array(ProjectYamlSchema),
 });
-
 
 function loadProjects(): Map<string, Project> {
   const map = new Map<string, Project>();
