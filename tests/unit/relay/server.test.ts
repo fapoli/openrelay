@@ -14,7 +14,7 @@ vi.mock("../../../src/lib/logger.js", () => ({
 }));
 
 vi.mock("../../../src/config/env.js", () => ({
-  config: { portUdp: 7777 },
+  config: { portUdp: 7777, udpBindHost: "0.0.0.0" },
   projects: new Map(),
 }));
 
@@ -29,7 +29,7 @@ function makeMockSocket() {
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       handlers[event] = handler;
     }),
-    bind: vi.fn((_port: number, cb?: () => void) => cb?.()),
+    bind: vi.fn((_port: number, _host: string, cb?: () => void) => cb?.()),
     send: vi.fn(),
     close: vi.fn(),
     emit(event: string, ...args: unknown[]) {
@@ -63,8 +63,8 @@ beforeEach(() => {
 });
 
 describe("startRelay", () => {
-  it("binds on the configured UDP port", () => {
-    expect(socket.bind).toHaveBeenCalledWith(7777, expect.any(Function));
+  it("binds on the configured UDP port and host", () => {
+    expect(socket.bind).toHaveBeenCalledWith(7777, "0.0.0.0", expect.any(Function));
   });
 
   it("drops packets shorter than 20 bytes", () => {

@@ -62,7 +62,7 @@ export function startRelay(): void {
     server.close();
   });
 
-  server.bind(config.portUdp, () => {
-    logger.info({ port: config.portUdp }, "UDP relay listening");
+  server.bind(config.portUdp, config.udpBindHost, () => {
+    logger.info({ port: config.portUdp, host: config.udpBindHost }, "UDP relay listening");
   });
 }

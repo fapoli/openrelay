@@ -49,5 +49,6 @@ export const projects = loadProjects();
 export const config = {
   portHttp: parseInt(process.env.PORT_HTTP ?? "3000"),
   portUdp: parseInt(process.env.PORT_UDP ?? "7777"),
+  udpBindHost: process.env.UDP_BIND_HOST ?? "0.0.0.0",
   sessionTtlMs: parseInt(process.env.SESSION_TTL_MS ?? "300000"),
 };
