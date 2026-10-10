@@ -83,6 +83,7 @@ export function createSession(
   });
   tokenToCode.set(sessionToken, code);
 
+  logger.info({ projectId, code, maxPlayers }, "Session created");
   return { code, password, sessionToken, peerSecret, peerIndex: 0 };
 }
 
@@ -101,6 +102,7 @@ export function joinSession(
   session.peers.set(peerSecret, { index: peerIndex, address: null, port: null, lastSeen: Date.now() });
   session.lastActivity = Date.now();
 
+  logger.info({ code, peerIndex }, "Peer joined session");
   return { sessionToken: session.sessionToken, peerSecret, peerIndex };
 }
 
