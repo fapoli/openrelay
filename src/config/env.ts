@@ -1,3 +1,4 @@
+import { Project } from "../types/project.js";
 import { readFileSync } from "fs";
 import { load } from "js-yaml";
 import { z } from "zod";
@@ -13,12 +14,6 @@ const ProjectsFileSchema = z.object({
   projects: z.array(ProjectYamlSchema),
 });
 
-export interface Project {
-  id: string;
-  apiKey: string;
-  maxSessions: number;
-  maxPlayersPerSession: number;
-}
 
 function loadProjects(): Map<string, Project> {
   const map = new Map<string, Project>();

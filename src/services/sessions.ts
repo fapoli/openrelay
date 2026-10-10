@@ -1,3 +1,4 @@
+import { RelaySession, PeerInfo } from "../types/session.js";
 import { randomBytes, createHash } from "crypto";
 import { config } from "../config/env.js";
 import logger from "../lib/logger.js";
@@ -5,22 +6,7 @@ import logger from "../lib/logger.js";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
-interface RelaySession {
-  sessionToken: number;
-  passwordHash: string;
-  projectId: string;
-  createdAt: number;
-  lastActivity: number;
-  maxPlayers: number;
-  peers: Map<string, PeerInfo>; // peerSecret (hex) -> peer info
-}
 
-interface PeerInfo {
-  index: number;
-  address: string | null; // null until first UDP packet
-  port: number | null;
-  lastSeen: number;
-}
 
 // code -> session
 const sessions = new Map<string, RelaySession>();

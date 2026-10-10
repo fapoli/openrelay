@@ -1,5 +1,5 @@
 import "express";
-import { Project } from "../config/env.js";
+import { Project } from "../types/project.js";
 
 declare global {
   namespace Express {
