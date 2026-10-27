@@ -9,6 +9,8 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 ## Features
 
 - **Zero configuration for players** — host shares a code and password, that's it
+- **Public lobby** — list visible sessions and inspect their peers before joining
+- **Nicknames** — peers are identified by name, not just index
 - **Project isolation** — multiple games on the same instance, each with its own API key and session limits
 - **No database** — entirely in-memory, zero infrastructure dependencies
 - **Stateless sessions** — sessions expire automatically after inactivity
@@ -115,9 +117,15 @@ All endpoints require `Authorization: Bearer <apiKey>`.
 ```
 POST /sessions
 Content-Type: application/json
-
-{ "code": "ROOM01", "password": "mypassword" }   ← both optional   ← optional; server generates one if absent
 ```
+
+| Field        | Type                      | Required | Description                                                         |
+| ------------ | ------------------------- | -------- | ------------------------------------------------------------------- |
+| `code`       | string (6 chars, A-Z0-9)  | No       | Custom code; server generates one if absent                         |
+| `password`   | string (min 6 chars)      | No       | If set, joining requires the correct password. Omit for open access |
+| `label`      | string (max 64 chars)     | No       | Human-readable name shown in the lobby                              |
+| `visibility` | `"public"` \| `"private"` | No       | Default `"private"`. Public sessions appear in `GET /sessions`      |
+| `nickname`   | string (max 32 chars)     | No       | Nickname for the host peer                                          |
 
 Returns `409 Conflict` if the code is already in use.
 
@@ -133,16 +141,19 @@ Response:
 }
 ```
 
-Share `code` and `password` with your players. Use `sessionToken` and `peerSecret` to connect to the UDP relay.
+`password` is `null` for public sessions without a password. Share `code` and `password` with your players out-of-band. Use `sessionToken` and `peerSecret` to connect to the UDP relay.
 
 ### Join a session
 
 ```
 POST /sessions/:code/join
 Content-Type: application/json
-
-{ "password": "m2qn8pzv" }
 ```
+
+| Field      | Type                  | Required | Description                              |
+| ---------- | --------------------- | -------- | ---------------------------------------- |
+| `password` | string                | No       | Required for password-protected sessions |
+| `nickname` | string (max 32 chars) | No       | Nickname for this peer                   |
 
 Response:
 
@@ -153,6 +164,53 @@ Response:
   "peerIndex": 1
 }
 ```
+
+### List public sessions
+
+```
+GET /sessions
+```
+
+Returns all visible sessions for the project.
+
+```json
+{
+  "sessions": [
+    {
+      "code": "ROOM01",
+      "label": "Friday night",
+      "peers": 3,
+      "maxPeers": 8,
+      "passwordRequired": false
+    }
+  ]
+}
+```
+
+`peers` reflects only active peers (seen within the last 30 seconds).
+
+### Session lobby
+
+```
+GET /sessions/:code
+```
+
+Returns details and the current peer list for any session (public or private).
+
+```json
+{
+  "code": "ROOM01",
+  "label": "Friday night",
+  "visibility": "public",
+  "passwordRequired": false,
+  "peers": [
+    { "index": 0, "nickname": "alice" },
+    { "index": 1, "nickname": "bob" }
+  ]
+}
+```
+
+Only active peers appear in the list.
 
 ### Health check
 

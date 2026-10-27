@@ -14,7 +14,7 @@ import {
 } from "../repositories/sessionsRepository.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
+export const PEER_ACTIVE_MS = 30_000;
 
 function randomString(chars: string, length: number): string {
   const bytes = randomBytes(length);
@@ -35,15 +35,36 @@ function generatePeerSecret(): string {
   return randomBytes(16).toString("hex");
 }
 
+export interface CreateSessionOpts {
+  code?: string;
+  password?: string;
+  label?: string;
+  visibility?: "public" | "private";
+  nickname?: string;
+}
+
 export function createSession(
   projectId: string,
   maxPlayers: number,
-  requestedCode?: string,
-  requestedPassword?: string
+  opts: CreateSessionOpts = {}
 ):
-  | { code: string; password: string; sessionToken: number; peerSecret: string; peerIndex: number }
+  | {
+      code: string;
+      password: string | null;
+      sessionToken: number;
+      peerSecret: string;
+      peerIndex: number;
+    }
   | "conflict"
   | null {
+  const {
+    code: requestedCode,
+    password: requestedPassword,
+    label = null,
+    visibility = "private",
+    nickname = "",
+  } = opts;
+
   let code: string;
   if (requestedCode !== undefined) {
     if (hasSession(requestedCode)) return "conflict";
@@ -56,17 +77,19 @@ export function createSession(
     } while (hasSession(code));
   }
 
-  const password = requestedPassword ?? randomString(PASSWORD_CHARS, 8);
+  const password = requestedPassword ?? null;
   const sessionToken = generateToken();
   const peerSecret = generatePeerSecret();
   const now = Date.now();
 
   const peers = new Map<string, PeerInfo>();
-  peers.set(peerSecret, { index: 0, address: null, port: null, lastSeen: now });
+  peers.set(peerSecret, { index: 0, nickname, address: null, port: null, lastSeen: now });
 
   insertSession(code, {
     sessionToken,
-    passwordHash: hashPassword(password),
+    passwordHash: password ? hashPassword(password) : null,
+    visibility,
+    label,
     projectId,
     createdAt: now,
     lastActivity: now,
@@ -75,24 +98,35 @@ export function createSession(
   });
   insertToken(sessionToken, code);
 
-  logger.info({ projectId, code, maxPlayers }, "Session created");
+  logger.info({ projectId, code, maxPlayers, visibility }, "Session created");
   return { code, password, sessionToken, peerSecret, peerIndex: 0 };
+}
+
+export interface JoinSessionOpts {
+  nickname?: string;
 }
 
 export function joinSession(
   code: string,
-  password: string,
-  projectId: string
+  password: string | null,
+  projectId: string,
+  opts: JoinSessionOpts = {}
 ): { sessionToken: number; peerSecret: string; peerIndex: number } | null {
+  const { nickname = "" } = opts;
   const session = fetchSession(code);
   if (!session || session.projectId !== projectId) return null;
-  if (session.passwordHash !== hashPassword(password)) return null;
+
+  if (session.passwordHash !== null) {
+    if (!password || session.passwordHash !== hashPassword(password)) return null;
+  }
+
   if (session.peers.size >= session.maxPlayers) return null;
 
   const peerIndex = session.peers.size;
   const peerSecret = generatePeerSecret();
   session.peers.set(peerSecret, {
     index: peerIndex,
+    nickname,
     address: null,
     port: null,
     lastSeen: Date.now(),
@@ -109,6 +143,59 @@ export function getActiveSessionCount(projectId: string): number {
     if (s.projectId === projectId) count++;
   }
   return count;
+}
+
+export function getPublicSessions(projectId: string): Array<{
+  code: string;
+  label: string | null;
+  peers: number;
+  maxPeers: number;
+  passwordRequired: boolean;
+}> {
+  const now = Date.now();
+  const result = [];
+  for (const [code, s] of fetchAllSessions()) {
+    if (s.projectId !== projectId || s.visibility !== "public") continue;
+    const peers = [...s.peers.values()].filter((p) => now - p.lastSeen < PEER_ACTIVE_MS).length;
+    result.push({
+      code,
+      label: s.label,
+      peers,
+      maxPeers: s.maxPlayers,
+      passwordRequired: s.passwordHash !== null,
+    });
+  }
+  return result;
+}
+
+export function getSession(
+  code: string,
+  projectId: string
+): {
+  code: string;
+  label: string | null;
+  visibility: "public" | "private";
+  passwordRequired: boolean;
+  peers: Array<{ index: number; nickname: string }>;
+} | null {
+  const session = fetchSession(code);
+  if (!session || session.projectId !== projectId) return null;
+
+  const now = Date.now();
+  const peers = [];
+  for (const [, peer] of session.peers) {
+    if (now - peer.lastSeen >= PEER_ACTIVE_MS) continue;
+    peers.push({ index: peer.index, nickname: peer.nickname });
+  }
+  peers.sort((a, b) => a.index - b.index);
+
+  return {
+    code,
+    label: session.label,
+    visibility: session.visibility,
+    passwordRequired: session.passwordHash !== null,
+    peers,
+  };
 }
 
 export function registerAndGetPeers(
@@ -155,7 +242,7 @@ export function cleanup(): void {
     }
 
     for (const [secret, peer] of session.peers) {
-      if (now - peer.lastSeen > 30_000) {
+      if (now - peer.lastSeen > PEER_ACTIVE_MS) {
         session.peers.delete(secret);
       }
     }
