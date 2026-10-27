@@ -6,8 +6,8 @@ import logger from "../lib/logger.js";
 
 const ProjectYamlSchema = z.object({
   id: z.string(),
-  maxSessions: z.number().int().positive().default(100),
-  maxPlayersPerSession: z.number().int().positive().default(16),
+  maxSessions: z.number().int().min(0).default(0),
+  maxPeersPerSession: z.number().int().positive().default(16),
 });
 
 const ProjectsFileSchema = z.object({
@@ -36,7 +36,7 @@ function loadProjects(): Map<string, Project> {
       id: p.id,
       apiKey,
       maxSessions: p.maxSessions,
-      maxPlayersPerSession: p.maxPlayersPerSession,
+      maxPeersPerSession: p.maxPeersPerSession,
     });
     logger.info({ projectId: p.id }, "Project loaded");
   }
