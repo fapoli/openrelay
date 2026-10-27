@@ -217,13 +217,16 @@ GET /health
 
 ### Sending to the relay
 
-Every packet sent to the relay must begin with a 20-byte header:
+Every packet sent to the relay must begin with a 9-byte header:
 
 ```
-[0–3]   sessionToken  (uint32 BE)
-[4–19]  peerSecret    (16 bytes, from session response)
-[20…]   payload
+[0–3]  sessionToken    (uint32 BE)
+[4–7]  peerToken       (4 bytes, from session response)
+[8]    targetPeerIndex (uint8; 0xFF = broadcast to all peers)
+[9…]   payload
 ```
+
+Set `targetPeerIndex` to the recipient's `peerIndex` for unicast, or `0xFF` to broadcast to all peers in the session.
 
 Peers are registered automatically on their first packet — no explicit handshake required.
 

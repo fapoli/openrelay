@@ -3,7 +3,7 @@ import { config } from "../config/env.js";
 import { registerAndGetPeers } from "../services/sessions.js";
 import logger from "../lib/logger.js";
 
-// Packet format: [4 bytes sessionToken (uint32 BE)] [16 bytes peerSecret (hex bytes)] [payload...]
+// Packet format: [4 bytes sessionToken (uint32 BE)] [4 bytes peerToken] [1 byte targetPeerIndex (0xFF = broadcast)] [payload...]
 
 export function startRelay(): void {
   const server = dgram.createSocket("udp4");
@@ -14,7 +14,7 @@ export function startRelay(): void {
       "UDP packet received"
     );
 
-    if (msg.length < 20) {
+    if (msg.length < 9) {
       logger.warn(
         { bytes: msg.length, from: `${rinfo.address}:${rinfo.port}` },
         "UDP packet too short, dropping"
@@ -23,10 +23,17 @@ export function startRelay(): void {
     }
 
     const sessionToken = msg.readUInt32BE(0);
-    const peerSecret = msg.subarray(4, 20).toString("hex");
-    const payload = msg.subarray(20);
+    const peerToken = msg.subarray(4, 8).toString("hex");
+    const targetPeerIndex = msg.readUInt8(8);
+    const payload = msg.subarray(9);
 
-    const result = registerAndGetPeers(sessionToken, peerSecret, rinfo.address, rinfo.port);
+    const result = registerAndGetPeers(
+      sessionToken,
+      peerToken,
+      rinfo.address,
+      rinfo.port,
+      targetPeerIndex
+    );
     if (!result) {
       logger.warn(
         { sessionToken, from: `${rinfo.address}:${rinfo.port}` },

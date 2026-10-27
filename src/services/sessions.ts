@@ -31,8 +31,8 @@ function generateToken(): number {
   return randomBytes(4).readUInt32BE(0);
 }
 
-function generatePeerSecret(): string {
-  return randomBytes(16).toString("hex");
+function generatePeerToken(): string {
+  return randomBytes(4).toString("hex");
 }
 
 export interface CreateSessionOpts {
@@ -51,7 +51,7 @@ export function createSession(
       code: string;
       password: string | null;
       sessionToken: number;
-      peerSecret: string;
+      peerToken: string;
       peerIndex: number;
     }
   | "conflict"
@@ -77,11 +77,11 @@ export function createSession(
 
   const password = requestedPassword ?? null;
   const sessionToken = generateToken();
-  const peerSecret = generatePeerSecret();
+  const peerToken = generatePeerToken();
   const now = Date.now();
 
   const peers = new Map<string, PeerInfo>();
-  peers.set(peerSecret, { index: 0, address: null, port: null, lastSeen: now });
+  peers.set(peerToken, { index: 0, address: null, port: null, lastSeen: now });
 
   insertSession(code, {
     sessionToken,
@@ -97,14 +97,14 @@ export function createSession(
   insertToken(sessionToken, code);
 
   logger.info({ projectId, code, maxPeers, visibility }, "Session created");
-  return { code, password, sessionToken, peerSecret, peerIndex: 0 };
+  return { code, password, sessionToken, peerToken, peerIndex: 0 };
 }
 
 export function joinSession(
   code: string,
   password: string | null,
   projectId: string
-): { sessionToken: number; peerSecret: string; peerIndex: number } | null {
+): { sessionToken: number; peerToken: string; peerIndex: number } | null {
   const session = fetchSession(code);
   if (!session || session.projectId !== projectId) return null;
 
@@ -115,8 +115,8 @@ export function joinSession(
   if (session.peers.size >= session.maxPeers) return null;
 
   const peerIndex = session.peers.size;
-  const peerSecret = generatePeerSecret();
-  session.peers.set(peerSecret, {
+  const peerToken = generatePeerToken();
+  session.peers.set(peerToken, {
     index: peerIndex,
     address: null,
     port: null,
@@ -125,7 +125,7 @@ export function joinSession(
   session.lastActivity = Date.now();
 
   logger.info({ code, peerIndex }, "Peer joined session");
-  return { sessionToken: session.sessionToken, peerSecret, peerIndex };
+  return { sessionToken: session.sessionToken, peerToken, peerIndex };
 }
 
 export function getActiveSessionCount(projectId: string): number {
@@ -167,16 +167,16 @@ export function getSession(
   label: string | null;
   visibility: "public" | "private";
   passwordRequired: boolean;
-  peers: number;
+  peers: Array<{ index: number }>;
 } | null {
   const session = fetchSession(code);
   if (!session || session.projectId !== projectId) return null;
 
   const now = Date.now();
-  let peers = 0;
+  const peers: Array<{ index: number }> = [];
   for (const [, peer] of session.peers) {
     if (now - peer.lastSeen >= PEER_ACTIVE_MS) continue;
-    peers++;
+    peers.push({ index: peer.index });
   }
 
   return {
@@ -188,11 +188,14 @@ export function getSession(
   };
 }
 
+const BROADCAST = 0xff;
+
 export function registerAndGetPeers(
   sessionToken: number,
-  peerSecret: string,
+  peerToken: string,
   address: string,
-  port: number
+  port: number,
+  targetPeerIndex: number = BROADCAST
 ): { senderIndex: number; peers: Array<{ address: string; port: number }> } | null {
   const code = fetchCodeByToken(sessionToken);
   if (!code) return null;
@@ -200,7 +203,7 @@ export function registerAndGetPeers(
   const session = fetchSession(code);
   if (!session) return null;
 
-  const peer = session.peers.get(peerSecret);
+  const peer = session.peers.get(peerToken);
   if (!peer) return null;
 
   peer.address = address;
@@ -210,9 +213,9 @@ export function registerAndGetPeers(
 
   const others: Array<{ address: string; port: number }> = [];
   for (const [secret, p] of session.peers) {
-    if (secret !== peerSecret && p.address !== null && p.port !== null) {
-      others.push({ address: p.address, port: p.port });
-    }
+    if (secret === peerToken || p.address === null || p.port === null) continue;
+    if (targetPeerIndex !== BROADCAST && p.index !== targetPeerIndex) continue;
+    others.push({ address: p.address, port: p.port });
   }
 
   logger.debug({ sessionToken, address, port }, "Peer packet received");

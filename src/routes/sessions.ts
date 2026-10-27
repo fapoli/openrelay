@@ -46,7 +46,7 @@ router.post("/sessions", requireApiKey, (_req: Request, res: Response) => {
     code: result.code,
     password: result.password,
     sessionToken: result.sessionToken,
-    peerSecret: result.peerSecret,
+    peerToken: result.peerToken,
     peerIndex: result.peerIndex,
   });
 });
@@ -64,7 +64,7 @@ router.post("/sessions/:code/join", requireApiKey, (req: Request, res: Response)
 
   return res.json({
     sessionToken: result.sessionToken,
-    peerSecret: result.peerSecret,
+    peerToken: result.peerToken,
     peerIndex: result.peerIndex,
   });
 });

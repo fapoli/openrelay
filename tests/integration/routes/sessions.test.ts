@@ -10,7 +10,7 @@ vi.mock("../../../src/config/env.js", () => ({
   projects: new Map([
     [
       "test-api-key",
-      { id: "test-project", apiKey: "test-api-key", maxSessions: 20, maxPlayersPerSession: 4 },
+      { id: "test-project", apiKey: "test-api-key", maxSessions: 20, maxPeersPerSession: 4 },
     ],
   ]),
 }));
@@ -38,7 +38,7 @@ describe("POST /sessions", () => {
     expect(res.body).toMatchObject({
       code: expect.stringMatching(/^[A-Z0-9]{6}$/),
       sessionToken: expect.any(Number),
-      peerSecret: expect.any(String),
+      peerToken: expect.any(String),
       peerIndex: 0,
     });
   });
@@ -108,7 +108,7 @@ describe("POST /sessions/:code/join", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       sessionToken: expect.any(Number),
-      peerSecret: expect.any(String),
+      peerToken: expect.any(String),
       peerIndex: 1,
     });
   });
@@ -200,7 +200,7 @@ describe("GET /sessions/:code", () => {
       label: "Lobby Room",
       visibility: "public",
       passwordRequired: false,
-      peers: expect.arrayContaining([expect.objectContaining({ index: 0, nickname: "alice" })]),
+      peers: expect.arrayContaining([expect.objectContaining({ index: 0 })]),
     });
   });
 });

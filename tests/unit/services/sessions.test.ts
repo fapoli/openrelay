@@ -270,7 +270,7 @@ describe("getSession", () => {
     expect(lobby).not.toBeNull();
     expect(lobby?.visibility).toBe("public");
     expect(lobby?.passwordRequired).toBe(false);
-    expect(lobby?.peers).toBe(2);
+    expect(lobby?.peers).toHaveLength(2);
   });
 
   it("excludes inactive peers from the lobby", () => {
@@ -280,7 +280,7 @@ describe("getSession", () => {
     ]);
     vi.mocked(repo.fetchSession).mockReturnValue(makeSession({ peers }) as never);
     const lobby = getSession("AAAAAA", "proj1")!;
-    expect(lobby.peers).toBe(1);
+    expect(lobby.peers).toHaveLength(1);
   });
 });
 

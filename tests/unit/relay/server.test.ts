@@ -40,18 +40,20 @@ function makeMockSocket() {
 
 function makePacket(
   sessionToken: number,
-  peerSecretHex: string,
-  payload = Buffer.alloc(0)
+  peerTokenHex: string,
+  payload = Buffer.alloc(0),
+  targetPeerIndex = 0xff
 ): Buffer {
-  const buf = Buffer.allocUnsafe(4 + 16 + payload.length);
+  const buf = Buffer.allocUnsafe(9 + payload.length);
   buf.writeUInt32BE(sessionToken, 0);
-  Buffer.from(peerSecretHex, "hex").copy(buf, 4);
-  payload.copy(buf, 20);
+  Buffer.from(peerTokenHex, "hex").copy(buf, 4);
+  buf.writeUInt8(targetPeerIndex, 8);
+  payload.copy(buf, 9);
   return buf;
 }
 
 const RINFO: RemoteInfo = { address: "1.2.3.4", port: 5000, family: "IPv4", size: 20 };
-const SECRET_HEX = "aabbccddeeff00112233445566778899";
+const SECRET_HEX = "aabbccdd";
 
 let socket: ReturnType<typeof makeMockSocket>;
 
@@ -67,8 +69,8 @@ describe("startRelay", () => {
     expect(socket.bind).toHaveBeenCalledWith(7777, "0.0.0.0", expect.any(Function));
   });
 
-  it("drops packets shorter than 20 bytes", () => {
-    socket.emit("message", Buffer.alloc(19), RINFO);
+  it("drops packets shorter than 9 bytes", () => {
+    socket.emit("message", Buffer.alloc(8), RINFO);
     expect(sessions.registerAndGetPeers).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
   });
@@ -87,7 +89,8 @@ describe("startRelay", () => {
       0xdeadbeef,
       SECRET_HEX,
       "1.2.3.4",
-      5000
+      5000,
+      0xff
     );
   });
 
