@@ -26,18 +26,23 @@ import {
   createSession,
   joinSession,
   getActiveSessionCount,
+  getPublicSessions,
+  getSession,
   registerAndGetPeers,
   cleanup,
+  PEER_ACTIVE_MS,
 } from "../../../src/services/sessions.js";
 
 function makeSession(overrides: Record<string, unknown> = {}) {
   return {
     sessionToken: 99999,
     passwordHash: createHash("sha256").update("correctpw").digest("hex"),
+    visibility: "private",
+    label: null,
     projectId: "proj1",
     createdAt: Date.now(),
     lastActivity: Date.now() - 1000,
-    maxPlayers: 4,
+    maxPeers: 4,
     peers: new Map([
       ["hostsecret", { index: 0, address: "1.2.3.4", port: 5000, lastSeen: Date.now() }],
     ]),
@@ -54,22 +59,22 @@ beforeEach(() => {
 describe("createSession", () => {
   it("returns conflict when the requested code already exists", () => {
     vi.mocked(repo.hasSession).mockReturnValue(true);
-    expect(createSession("proj1", 4, "ABC123")).toBe("conflict");
+    expect(createSession("proj1", 4, { code: "ABC123" })).toBe("conflict");
     expect(repo.insertSession).not.toHaveBeenCalled();
   });
 
   it("uses requestedCode and stores the session", () => {
-    const result = createSession("proj1", 4, "XYZ999");
+    const result = createSession("proj1", 4, { code: "XYZ999" });
     if (!result || result === "conflict") throw new Error("unexpected");
     expect(result.code).toBe("XYZ999");
     expect(repo.insertSession).toHaveBeenCalledWith(
       "XYZ999",
-      expect.objectContaining({ projectId: "proj1", maxPlayers: 4 })
+      expect.objectContaining({ projectId: "proj1", maxPeers: 4 })
     );
   });
 
   it("uses requestedPassword", () => {
-    const result = createSession("proj1", 4, "AAABBB", "mypassword");
+    const result = createSession("proj1", 4, { code: "AAABBB", password: "mypassword" });
     if (!result || result === "conflict") throw new Error("unexpected");
     expect(result.password).toBe("mypassword");
   });
@@ -81,15 +86,44 @@ describe("createSession", () => {
   });
 
   it("returns peerIndex 0 for the host", () => {
-    const result = createSession("proj1", 4, "CCCDDD");
+    const result = createSession("proj1", 4, { code: "CCCDDD" });
     if (!result || result === "conflict") throw new Error("unexpected");
     expect(result.peerIndex).toBe(0);
   });
 
   it("registers the session token", () => {
-    const result = createSession("proj1", 4, "EEEFFF");
+    const result = createSession("proj1", 4, { code: "EEEFFF" });
     if (!result || result === "conflict") throw new Error("unexpected");
     expect(repo.insertToken).toHaveBeenCalledWith(result.sessionToken, "EEEFFF");
+  });
+
+  it("sets visibility and label on the session", () => {
+    createSession("proj1", 4, { code: "PUBLC1", visibility: "public", label: "General" });
+    const [, session] = vi.mocked(repo.insertSession).mock.calls[0] as [
+      string,
+      ReturnType<typeof makeSession>,
+    ];
+    expect(session.visibility).toBe("public");
+    expect(session.label).toBe("General");
+  });
+
+  it("sets passwordHash to null for public rooms with no password", () => {
+    createSession("proj1", 4, { code: "NOPW11", visibility: "public" });
+    const [, session] = vi.mocked(repo.insertSession).mock.calls[0] as [
+      string,
+      ReturnType<typeof makeSession>,
+    ];
+    expect(session.passwordHash).toBeNull();
+  });
+
+  it("keeps a password when a public room provides one", () => {
+    const result = createSession("proj1", 4, {
+      code: "PWPUBL",
+      visibility: "public",
+      password: "secret",
+    });
+    if (!result || result === "conflict") throw new Error("unexpected");
+    expect(result.password).toBe("secret");
   });
 });
 
@@ -116,7 +150,7 @@ describe("joinSession", () => {
         { index: i, address: null, port: null, lastSeen: Date.now() },
       ])
     );
-    vi.mocked(repo.fetchSession).mockReturnValue(makeSession({ maxPlayers: 4, peers }) as never);
+    vi.mocked(repo.fetchSession).mockReturnValue(makeSession({ maxPeers: 4, peers }) as never);
     expect(joinSession("AAAAAA", "correctpw", "proj1")).toBeNull();
   });
 
@@ -126,6 +160,19 @@ describe("joinSession", () => {
     expect(result).not.toBeNull();
     expect(result?.peerIndex).toBe(1);
     expect(result?.sessionToken).toBe(99999);
+  });
+
+  it("allows joining a public passwordless room with no password", () => {
+    vi.mocked(repo.fetchSession).mockReturnValue(
+      makeSession({ passwordHash: null, visibility: "public" }) as never
+    );
+    const result = joinSession("AAAAAA", null, "proj1");
+    expect(result).not.toBeNull();
+  });
+
+  it("returns null when a password-protected public room gets wrong password", () => {
+    vi.mocked(repo.fetchSession).mockReturnValue(makeSession({ visibility: "public" }) as never);
+    expect(joinSession("AAAAAA", "wrong", "proj1")).toBeNull();
   });
 });
 
@@ -139,6 +186,101 @@ describe("getActiveSessionCount", () => {
       ]).entries() as never
     );
     expect(getActiveSessionCount("proj1")).toBe(2);
+  });
+});
+
+describe("getPublicSessions", () => {
+  it("returns only public sessions for the given project", () => {
+    vi.mocked(repo.fetchAllSessions).mockReturnValue(
+      new Map([
+        [
+          "PUB1",
+          makeSession({
+            projectId: "proj1",
+            visibility: "public",
+            label: "Room A",
+            passwordHash: null,
+          }),
+        ],
+        ["PRIV", makeSession({ projectId: "proj1", visibility: "private" })],
+        ["OTH1", makeSession({ projectId: "proj2", visibility: "public" })],
+      ]).entries() as never
+    );
+    const result = getPublicSessions("proj1");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ code: "PUB1", label: "Room A", passwordRequired: false });
+  });
+
+  it("reflects passwordRequired correctly", () => {
+    vi.mocked(repo.fetchAllSessions).mockReturnValue(
+      new Map([
+        ["PW001", makeSession({ projectId: "proj1", visibility: "public" })],
+      ]).entries() as never
+    );
+    const result = getPublicSessions("proj1");
+    expect(result[0].passwordRequired).toBe(true);
+  });
+
+  it("returns active peer count and maxPeers", () => {
+    const peers = new Map([
+      ["s1", { index: 0, address: null, port: null, lastSeen: Date.now() }],
+      ["s2", { index: 1, address: null, port: null, lastSeen: Date.now() }],
+      [
+        "s3",
+        {
+          index: 2,
+          nickname: "c",
+          address: null,
+          port: null,
+          lastSeen: Date.now() - PEER_ACTIVE_MS - 1,
+        },
+      ],
+    ]);
+    vi.mocked(repo.fetchAllSessions).mockReturnValue(
+      new Map([
+        ["PC001", makeSession({ projectId: "proj1", visibility: "public", maxPeers: 8, peers })],
+      ]).entries() as never
+    );
+    const result = getPublicSessions("proj1")[0];
+    expect(result.peers).toBe(2);
+    expect(result.maxPeers).toBe(8);
+  });
+});
+
+describe("getSession", () => {
+  it("returns null for an unknown code", () => {
+    vi.mocked(repo.fetchSession).mockReturnValue(undefined);
+    expect(getSession("XXXXXX", "proj1")).toBeNull();
+  });
+
+  it("returns null for wrong project", () => {
+    vi.mocked(repo.fetchSession).mockReturnValue(makeSession() as never);
+    expect(getSession("AAAAAA", "other")).toBeNull();
+  });
+
+  it("returns session info and active peer count", () => {
+    const peers = new Map([
+      ["s2", { index: 1, address: null, port: null, lastSeen: Date.now() }],
+      ["s1", { index: 0, address: null, port: null, lastSeen: Date.now() }],
+    ]);
+    vi.mocked(repo.fetchSession).mockReturnValue(
+      makeSession({ visibility: "public", label: "Room A", passwordHash: null, peers }) as never
+    );
+    const lobby = getSession("AAAAAA", "proj1");
+    expect(lobby).not.toBeNull();
+    expect(lobby?.visibility).toBe("public");
+    expect(lobby?.passwordRequired).toBe(false);
+    expect(lobby?.peers).toHaveLength(2);
+  });
+
+  it("excludes inactive peers from the lobby", () => {
+    const peers = new Map([
+      ["s1", { index: 0, address: null, port: null, lastSeen: Date.now() }],
+      ["s2", { index: 1, address: null, port: null, lastSeen: Date.now() - PEER_ACTIVE_MS - 1 }],
+    ]);
+    vi.mocked(repo.fetchSession).mockReturnValue(makeSession({ peers }) as never);
+    const lobby = getSession("AAAAAA", "proj1")!;
+    expect(lobby.peers).toHaveLength(1);
   });
 });
 

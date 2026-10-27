@@ -9,6 +9,7 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 ## Features
 
 - **Zero configuration for players** — host shares a code and password, that's it
+- **Public lobby** — list visible sessions and inspect their peers before joining
 - **Project isolation** — multiple games on the same instance, each with its own API key and session limits
 - **No database** — entirely in-memory, zero infrastructure dependencies
 - **Stateless sessions** — sessions expire automatically after inactivity
@@ -27,13 +28,13 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 
 ## How it works
 
-1. The host calls `POST /sessions` (optionally providing a `code`) → receives `code`, `password`, `sessionToken`, `peerSecret`, and `peerIndex: 0`
+1. The host calls `POST /sessions` (optionally providing a `code`) → receives `code`, `password`, `sessionToken`, `peerToken`, and `peerIndex: 0`
 2. The host shares the code and password with their players out-of-band (in-game lobby, chat, etc.)
-3. Each player calls `POST /sessions/:code/join` with the password → receives `sessionToken`, `peerSecret`, and their assigned `peerIndex`
-4. All players open a UDP socket to the relay and prefix every packet with `[sessionToken (4 bytes BE)][peerSecret (16 bytes)]`
-5. The relay authenticates the peer, then forwards packets to all other peers in the session, prepending the sender's `peerIndex` as a 4-byte big-endian header
+3. Each player calls `POST /sessions/:code/join` with the password → receives `sessionToken`, `peerToken`, and their assigned `peerIndex`
+4. All players open a UDP socket to the relay and prefix every packet with a 9-byte header: `[sessionToken (4 bytes BE)][peerToken (4 bytes)][targetPeerIndex (1 byte)]`
+5. The relay identifies the peer via `peerToken`, then forwards the packet to the target peer (unicast) or all other peers (broadcast, `targetPeerIndex = 0xFF`), prepending the sender's `peerIndex` as a 4-byte big-endian header
 
-The relay never inspects packet payload — it only reads the 20-byte header to authenticate and route traffic, and prepends the sender index so clients can distinguish peers.
+The relay never inspects packet payload — it only reads the 9-byte header to identify and route traffic, and prepends the sender index so clients can distinguish peers.
 
 ---
 
@@ -46,8 +47,8 @@ Edit `projects.yaml`:
 ```yaml
 projects:
   - id: example-game
-    maxSessions: 100
-    maxPlayersPerSession: 16
+    maxPeersPerSession: 16  # max peers per session (default: 16)
+    maxSessions: 50         # max concurrent sessions, 0 = unlimited (default: 0)
 ```
 
 ### 2. Set API keys
@@ -115,9 +116,14 @@ All endpoints require `Authorization: Bearer <apiKey>`.
 ```
 POST /sessions
 Content-Type: application/json
-
-{ "code": "ROOM01", "password": "mypassword" }   ← both optional   ← optional; server generates one if absent
 ```
+
+| Field        | Type                      | Required | Description                                                         |
+| ------------ | ------------------------- | -------- | ------------------------------------------------------------------- |
+| `code`       | string (6 chars, A-Z0-9)  | No       | Custom code; server generates one if absent                         |
+| `password`   | string (min 6 chars)      | No       | If set, joining requires the correct password. Omit for open access |
+| `label`      | string (max 64 chars)     | No       | Human-readable name shown in the lobby                              |
+| `visibility` | `"public"` \| `"private"` | No       | Default `"private"`. Public sessions appear in `GET /sessions`      |
 
 Returns `409 Conflict` if the code is already in use.
 
@@ -128,31 +134,77 @@ Response:
   "code": "ROOM01",
   "password": "m2qn8pzv",
   "sessionToken": 2947183621,
-  "peerSecret": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "peerToken": "a1b2c3d4",
   "peerIndex": 0
 }
 ```
 
-Share `code` and `password` with your players. Use `sessionToken` and `peerSecret` to connect to the UDP relay.
+`password` is `null` for public sessions without a password. Share `code` and `password` with your players out-of-band. Use `sessionToken` and `peerToken` to connect to the UDP relay.
 
 ### Join a session
 
 ```
 POST /sessions/:code/join
 Content-Type: application/json
-
-{ "password": "m2qn8pzv" }
 ```
+
+| Field      | Type   | Required | Description                              |
+| ---------- | ------ | -------- | ---------------------------------------- |
+| `password` | string | No       | Required for password-protected sessions |
 
 Response:
 
 ```json
 {
   "sessionToken": 2947183621,
-  "peerSecret": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
+  "peerToken": "b2c3d4e5",
   "peerIndex": 1
 }
 ```
+
+### List public sessions
+
+```
+GET /sessions
+```
+
+Returns all visible sessions for the project.
+
+```json
+{
+  "sessions": [
+    {
+      "code": "ROOM01",
+      "label": "Friday night",
+      "peers": 3,
+      "maxPeers": 8,
+      "passwordRequired": false
+    }
+  ]
+}
+```
+
+`peers` reflects only active peers (seen within the last 10 seconds).
+
+### Session lobby
+
+```
+GET /sessions/:code
+```
+
+Returns details and the active peer count for any session (public or private).
+
+```json
+{
+  "code": "ROOM01",
+  "label": "Friday night",
+  "visibility": "public",
+  "passwordRequired": false,
+  "peers": 2
+}
+```
+
+Only active peers appear in the count.
 
 ### Health check
 
@@ -166,13 +218,16 @@ GET /health
 
 ### Sending to the relay
 
-Every packet sent to the relay must begin with a 20-byte header:
+Every packet sent to the relay must begin with a 9-byte header:
 
 ```
-[0–3]   sessionToken  (uint32 BE)
-[4–19]  peerSecret    (16 bytes, from session response)
-[20…]   payload
+[0–3]  sessionToken    (uint32 BE)
+[4–7]  peerToken       (4 bytes, from session response)
+[8]    targetPeerIndex (uint8; 0xFF = broadcast to all peers)
+[9…]   payload
 ```
+
+Set `targetPeerIndex` to the recipient's `peerIndex` for unicast, or `0xFF` to broadcast to all peers in the session.
 
 Peers are registered automatically on their first packet — no explicit handshake required.
 

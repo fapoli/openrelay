@@ -7,10 +7,12 @@ export interface PeerInfo {
 
 export interface RelaySession {
   sessionToken: number;
-  passwordHash: string;
+  passwordHash: string | null; // null = public room with no password
+  visibility: "public" | "private";
+  label: string | null;
   projectId: string;
   createdAt: number;
   lastActivity: number;
-  maxPlayers: number;
+  maxPeers: number;
   peers: Map<string, PeerInfo>;
 }
