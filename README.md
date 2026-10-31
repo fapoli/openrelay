@@ -47,8 +47,8 @@ Edit `projects.yaml`:
 ```yaml
 projects:
   - id: example-game
-    maxPeersPerSession: 16  # max peers per session (default: 16)
-    maxSessions: 50         # max concurrent sessions, 0 = unlimited (default: 0)
+    maxPeersPerSession: 16 # max peers per session (default: 16)
+    maxSessions: 50 # max concurrent sessions, 0 = unlimited (default: 0)
 ```
 
 ### 2. Set API keys
@@ -98,12 +98,13 @@ Make sure to expose **both** the HTTP port (TCP) and the relay port (UDP).
 
 ## Environment Variables
 
-| Variable         | Default  | Description                          |
-| ---------------- | -------- | ------------------------------------ |
-| `PORT`           | `3000`   | HTTP signaling port                  |
-| `PORT_UDP`       | `7777`   | UDP relay port                       |
-| `SESSION_TTL_MS` | `300000` | Session expiry after inactivity (ms) |
-| `LOG_LEVEL`      | `info`   | Pino log level                       |
+| Variable         | Default   | Description                          |
+| ---------------- | --------- | ------------------------------------ |
+| `PORT_HTTP`      | `3000`    | HTTP signaling port                  |
+| `PORT_UDP`       | `7777`    | UDP relay port                       |
+| `UDP_BIND_HOST`  | `0.0.0.0` | UDP bind address                     |
+| `SESSION_TTL_MS` | `300000`  | Session expiry after inactivity (ms) |
+| `LOG_LEVEL`      | `info`    | Pino log level                       |
 
 ---
 

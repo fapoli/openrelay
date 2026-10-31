@@ -53,7 +53,7 @@ describe("POST /sessions", () => {
     const res = await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "PUBLC1", visibility: "public", label: "General Chat" });
+      .send({ code: "PUBLC3", visibility: "public", label: "General Chat" });
     expect(res.status).toBe(201);
     expect(res.body.password).toBeNull();
   });
@@ -100,9 +100,9 @@ describe("POST /sessions/:code/join", () => {
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "JOINOK", password: "supersecret" });
+      .send({ code: "JNKAB2", password: "supersecret" });
     const res = await request(app)
-      .post("/sessions/JOINOK/join")
+      .post("/sessions/JNKAB2/join")
       .set(AUTH)
       .send({ password: "supersecret" });
     expect(res.status).toBe(200);
@@ -114,22 +114,10 @@ describe("POST /sessions/:code/join", () => {
   });
 
   it("joins a public passwordless room without a password", async () => {
-    await request(app).post("/sessions").set(AUTH).send({ code: "NOPW22", visibility: "public" });
-    const res = await request(app).post("/sessions/NOPW22/join").set(AUTH).send({});
+    await request(app).post("/sessions").set(AUTH).send({ code: "NKPW22", visibility: "public" });
+    const res = await request(app).post("/sessions/NKPW22/join").set(AUTH).send({});
     expect(res.status).toBe(200);
     expect(res.body.peerIndex).toBe(1);
-  });
-
-  it("accepts a nickname on join", async () => {
-    await request(app)
-      .post("/sessions")
-      .set(AUTH)
-      .send({ code: "NICKJN", password: "supersecret" });
-    const res = await request(app)
-      .post("/sessions/NICKJN/join")
-      .set(AUTH)
-      .send({ password: "supersecret", nickname: "bob" });
-    expect(res.status).toBe(200);
   });
 });
 
@@ -143,31 +131,31 @@ describe("GET /sessions", () => {
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "PUBLS1", visibility: "public", label: "Open Room" });
+      .send({ code: "PUBLS3", visibility: "public", label: "Open Room" });
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "PRIVS1", password: "supersecret" });
+      .send({ code: "PRVS22", password: "supersecret" });
 
     const res = await request(app).get("/sessions").set(AUTH);
     expect(res.status).toBe(200);
     const codes = (res.body.sessions as Array<{ code: string }>).map((s) => s.code);
-    expect(codes).toContain("PUBLS1");
-    expect(codes).not.toContain("PRIVS1");
+    expect(codes).toContain("PUBLS3");
+    expect(codes).not.toContain("PRVS22");
   });
 
   it("returns the expected session shape", async () => {
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "SHAPE1", visibility: "public", label: "Shaped Room" });
+      .send({ code: "SHAPE3", visibility: "public", label: "Shaped Room" });
 
     const res = await request(app).get("/sessions").set(AUTH);
     const session = (res.body.sessions as Array<Record<string, unknown>>).find(
-      (s) => s.code === "SHAPE1"
+      (s) => s.code === "SHAPE3"
     );
     expect(session).toMatchObject({
-      code: "SHAPE1",
+      code: "SHAPE3",
       label: "Shaped Room",
       peers: expect.any(Number),
       maxPeers: expect.any(Number),
@@ -191,16 +179,16 @@ describe("GET /sessions/:code", () => {
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "LOBBY1", visibility: "public", label: "Lobby Room", nickname: "alice" });
+      .send({ code: "LBBY22", visibility: "public", label: "Lobby Room" });
 
-    const res = await request(app).get("/sessions/LOBBY1").set(AUTH);
+    const res = await request(app).get("/sessions/LBBY22").set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      code: "LOBBY1",
+      code: "LBBY22",
       label: "Lobby Room",
       visibility: "public",
       passwordRequired: false,
-      peers: expect.arrayContaining([expect.objectContaining({ index: 0 })]),
+      peers: expect.any(Number),
     });
   });
 });

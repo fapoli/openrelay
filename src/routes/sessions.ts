@@ -17,7 +17,7 @@ const CreateSchema = z.object({
   code: z
     .string()
     .length(6)
-    .regex(/^[A-Z0-9]+$/)
+    .regex(/^[A-HJ-NP-Z2-9]+$/)
     .optional(),
   password: z.string().min(6).optional(),
   label: z.string().trim().min(1).max(64).optional(),

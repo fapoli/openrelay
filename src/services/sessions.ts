@@ -93,6 +93,7 @@ export function createSession(
     lastActivity: now,
     maxPeers,
     peers,
+    nextPeerIndex: 1,
   });
   insertToken(sessionToken, code);
 
@@ -114,7 +115,7 @@ export function joinSession(
 
   if (session.peers.size >= session.maxPeers) return null;
 
-  const peerIndex = session.peers.size;
+  const peerIndex = session.nextPeerIndex++;
   const peerToken = generatePeerToken();
   session.peers.set(peerToken, {
     index: peerIndex,
@@ -167,16 +168,15 @@ export function getSession(
   label: string | null;
   visibility: "public" | "private";
   passwordRequired: boolean;
-  peers: Array<{ index: number }>;
+  peers: number;
 } | null {
   const session = fetchSession(code);
   if (!session || session.projectId !== projectId) return null;
 
   const now = Date.now();
-  const peers: Array<{ index: number }> = [];
+  let peers = 0;
   for (const [, peer] of session.peers) {
-    if (now - peer.lastSeen >= PEER_ACTIVE_MS) continue;
-    peers.push({ index: peer.index });
+    if (now - peer.lastSeen < PEER_ACTIVE_MS) peers++;
   }
 
   return {
