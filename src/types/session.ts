@@ -15,4 +15,5 @@ export interface RelaySession {
   lastActivity: number;
   maxPeers: number;
   peers: Map<string, PeerInfo>;
+  nextPeerIndex: number;
 }

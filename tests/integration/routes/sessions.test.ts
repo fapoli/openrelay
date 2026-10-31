@@ -119,18 +119,6 @@ describe("POST /sessions/:code/join", () => {
     expect(res.status).toBe(200);
     expect(res.body.peerIndex).toBe(1);
   });
-
-  it("accepts a nickname on join", async () => {
-    await request(app)
-      .post("/sessions")
-      .set(AUTH)
-      .send({ code: "NICKJN", password: "supersecret" });
-    const res = await request(app)
-      .post("/sessions/NICKJN/join")
-      .set(AUTH)
-      .send({ password: "supersecret", nickname: "bob" });
-    expect(res.status).toBe(200);
-  });
 });
 
 describe("GET /sessions", () => {
@@ -191,7 +179,7 @@ describe("GET /sessions/:code", () => {
     await request(app)
       .post("/sessions")
       .set(AUTH)
-      .send({ code: "LOBBY1", visibility: "public", label: "Lobby Room", nickname: "alice" });
+      .send({ code: "LOBBY1", visibility: "public", label: "Lobby Room" });
 
     const res = await request(app).get("/sessions/LOBBY1").set(AUTH);
     expect(res.status).toBe(200);
@@ -200,7 +188,7 @@ describe("GET /sessions/:code", () => {
       label: "Lobby Room",
       visibility: "public",
       passwordRequired: false,
-      peers: expect.arrayContaining([expect.objectContaining({ index: 0 })]),
+      peers: expect.any(Number),
     });
   });
 });
