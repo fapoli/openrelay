@@ -1,9 +1,15 @@
 package openrelay
 
 import (
+	"errors"
+	"net/netip"
 	"sync"
 	"testing"
 )
+
+var testIP = netip.MustParseAddr("10.0.0.1")
+
+func ap(s string) netip.AddrPort { return netip.MustParseAddrPort(s) }
 
 func newTestApp() *SessionStore {
 	return NewSessionStore(Config{SessionTTLMs: 300_000, PeerTimeoutMs: 10_000}, map[string]*Project{
@@ -13,7 +19,7 @@ func newTestApp() *SessionStore {
 
 func createTestSession(t *testing.T, a *SessionStore, code string) *CreateResult {
 	t.Helper()
-	r, err := a.createSession("proj", 0, 4, code, "", "", private)
+	r, err := a.createSession("proj", 0, 4, code, "", "", private, testIP)
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -22,7 +28,7 @@ func createTestSession(t *testing.T, a *SessionStore, code string) *CreateResult
 
 func TestCreateSession_success(t *testing.T) {
 	a := newTestApp()
-	r, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private)
+	r, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private, testIP)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,7 +42,7 @@ func TestCreateSession_success(t *testing.T) {
 
 func TestCreateSession_autoGeneratesCode(t *testing.T) {
 	a := newTestApp()
-	r, err := a.createSession("proj", 0, 4, "", "", "", private)
+	r, err := a.createSession("proj", 0, 4, "", "", "", private, testIP)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +54,7 @@ func TestCreateSession_autoGeneratesCode(t *testing.T) {
 func TestCreateSession_conflict(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	_, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private)
+	_, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private, testIP)
 	if err != errConflict {
 		t.Errorf("expected errConflict, got %v", err)
 	}
@@ -57,7 +63,7 @@ func TestCreateSession_conflict(t *testing.T) {
 func TestJoinSession_success(t *testing.T) {
 	a := newTestApp()
 	created := createTestSession(t, a, "AAAAAA")
-	r, err := a.joinSession("AAAAAA", "", "proj")
+	r, err := a.joinSession("AAAAAA", "", "proj", testIP)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,8 +78,8 @@ func TestJoinSession_success(t *testing.T) {
 func TestJoinSession_sequentialIndices(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	r1, _ := a.joinSession("AAAAAA", "", "proj")
-	r2, _ := a.joinSession("AAAAAA", "", "proj")
+	r1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	r2, _ := a.joinSession("AAAAAA", "", "proj", testIP)
 	if r1.PeerIndex != 1 || r2.PeerIndex != 2 {
 		t.Errorf("expected indices 1,2 got %d,%d", r1.PeerIndex, r2.PeerIndex)
 	}
@@ -81,8 +87,8 @@ func TestJoinSession_sequentialIndices(t *testing.T) {
 
 func TestJoinSession_wrongPassword(t *testing.T) {
 	a := newTestApp()
-	a.createSession("proj", 0, 4, "AAAAAA", "correct", "", private)
-	_, err := a.joinSession("AAAAAA", "wrong", "proj")
+	a.createSession("proj", 0, 4, "AAAAAA", "correct", "", private, testIP)
+	_, err := a.joinSession("AAAAAA", "wrong", "proj", testIP)
 	if err != errNotFound {
 		t.Errorf("expected errNotFound, got %v", err)
 	}
@@ -91,10 +97,10 @@ func TestJoinSession_wrongPassword(t *testing.T) {
 func TestJoinSession_fullSession(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA") // host = 1 peer
-	a.joinSession("AAAAAA", "", "proj")
-	a.joinSession("AAAAAA", "", "proj")
-	a.joinSession("AAAAAA", "", "proj") // now at max (4)
-	_, err := a.joinSession("AAAAAA", "", "proj")
+	a.joinSession("AAAAAA", "", "proj", testIP)
+	a.joinSession("AAAAAA", "", "proj", testIP)
+	a.joinSession("AAAAAA", "", "proj", testIP) // now at max (4)
+	_, err := a.joinSession("AAAAAA", "", "proj", testIP)
 	if err != errNotFound {
 		t.Errorf("expected errNotFound when full, got %v", err)
 	}
@@ -103,7 +109,7 @@ func TestJoinSession_fullSession(t *testing.T) {
 func TestJoinSession_wrongProject(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	_, err := a.joinSession("AAAAAA", "", "other-proj")
+	_, err := a.joinSession("AAAAAA", "", "other-proj", testIP)
 	if err != errNotFound {
 		t.Errorf("expected errNotFound for wrong project, got %v", err)
 	}
@@ -111,8 +117,8 @@ func TestJoinSession_wrongProject(t *testing.T) {
 
 func TestPublicSessions_filtersPrivate(t *testing.T) {
 	a := newTestApp()
-	a.createSession("proj", 0, 4, "PUBL22", "", "Open", public)
-	a.createSession("proj", 0, 4, "PRIV22", "", "", private)
+	a.createSession("proj", 0, 4, "PUBL22", "", "Open", public, testIP)
+	a.createSession("proj", 0, 4, "PRIV22", "", "", private, testIP)
 
 	sessions := a.publicSessions("proj")
 	if len(sessions) != 1 || sessions[0].Code != "PUBL22" {
@@ -122,8 +128,8 @@ func TestPublicSessions_filtersPrivate(t *testing.T) {
 
 func TestPublicSessions_filtersOtherProjects(t *testing.T) {
 	a := newTestApp()
-	a.createSession("proj", 0, 4, "PUBL22", "", "", public)
-	a.createSession("other", 0, 4, "PUBLA2", "", "", public)
+	a.createSession("proj", 0, 4, "PUBL22", "", "", public, testIP)
+	a.createSession("other", 0, 4, "PUBLA2", "", "", public, testIP)
 
 	sessions := a.publicSessions("proj")
 	if len(sessions) != 1 || sessions[0].Code != "PUBL22" {
@@ -162,12 +168,12 @@ func expireSession(a *SessionStore, code string) {
 func TestJoinSession_reusesLowestFreeIndex(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	a.joinSession("AAAAAA", "", "proj")          // 1
-	r2, _ := a.joinSession("AAAAAA", "", "proj") // 2
-	a.joinSession("AAAAAA", "", "proj")          // 3
+	a.joinSession("AAAAAA", "", "proj", testIP)          // 1
+	r2, _ := a.joinSession("AAAAAA", "", "proj", testIP) // 2
+	a.joinSession("AAAAAA", "", "proj", testIP)          // 3
 	expirePeer(a, "AAAAAA", r2.PeerToken)
 
-	r, err := a.joinSession("AAAAAA", "", "proj")
+	r, err := a.joinSession("AAAAAA", "", "proj", testIP)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,12 +185,12 @@ func TestJoinSession_reusesLowestFreeIndex(t *testing.T) {
 func TestJoinSession_expiredPeersDontCountTowardFull(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	r1, _ := a.joinSession("AAAAAA", "", "proj")
-	a.joinSession("AAAAAA", "", "proj")
-	a.joinSession("AAAAAA", "", "proj") // full (4)
+	r1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	a.joinSession("AAAAAA", "", "proj", testIP)
+	a.joinSession("AAAAAA", "", "proj", testIP) // full (4)
 	expirePeer(a, "AAAAAA", r1.PeerToken)
 
-	if _, err := a.joinSession("AAAAAA", "", "proj"); err != nil {
+	if _, err := a.joinSession("AAAAAA", "", "proj", testIP); err != nil {
 		t.Errorf("expected join to succeed after a peer expired, got %v", err)
 	}
 }
@@ -193,7 +199,7 @@ func TestJoinSession_expiredSession(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
 	expireSession(a, "AAAAAA")
-	if _, err := a.joinSession("AAAAAA", "", "proj"); err != errNotFound {
+	if _, err := a.joinSession("AAAAAA", "", "proj", testIP); err != errNotFound {
 		t.Errorf("expected errNotFound, got %v", err)
 	}
 }
@@ -203,7 +209,7 @@ func TestCreateSession_expiredCodeIsFree(t *testing.T) {
 	old := createTestSession(t, a, "AAAAAA")
 	expireSession(a, "AAAAAA")
 
-	r, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private)
+	r, err := a.createSession("proj", 0, 4, "AAAAAA", "", "", private, testIP)
 	if err != nil {
 		t.Fatalf("expected expired code to be reusable, got %v", err)
 	}
@@ -224,7 +230,7 @@ func TestActiveSessionCount_ignoresExpired(t *testing.T) {
 
 func TestPublicSessions_hidesExpired(t *testing.T) {
 	a := newTestApp()
-	a.createSession("proj", 0, 4, "PUBL22", "", "", public)
+	a.createSession("proj", 0, 4, "PUBL22", "", "", public, testIP)
 	expireSession(a, "PUBL22")
 	if s := a.publicSessions("proj"); len(s) != 0 {
 		t.Errorf("expected no sessions, got %+v", s)
@@ -243,7 +249,7 @@ func TestSessionInfo_expired(t *testing.T) {
 func TestSessionInfo_countsOnlyLivePeers(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	r1, _ := a.joinSession("AAAAAA", "", "proj")
+	r1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
 	expirePeer(a, "AAAAAA", r1.PeerToken)
 	info, _ := a.sessionInfo("AAAAAA", "proj")
 	if info.Peers != 1 {
@@ -254,11 +260,11 @@ func TestSessionInfo_countsOnlyLivePeers(t *testing.T) {
 func TestRegisterPeer_expiredPeerNotTargeted(t *testing.T) {
 	a := newTestApp()
 	host := createTestSession(t, a, "AAAAAA")
-	p1, _ := a.joinSession("AAAAAA", "", "proj")
-	a.registerPeer(host.SessionToken, p1.PeerToken, "10.0.0.2", 2000, broadcast)
+	p1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	a.registerPeer(host.SessionToken, p1.PeerToken, ap("10.0.0.1:2000"), broadcast)
 	expirePeer(a, "AAAAAA", p1.PeerToken)
 
-	r := a.registerPeer(host.SessionToken, host.PeerToken, "10.0.0.1", 1000, broadcast)
+	r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), broadcast)
 	if r == nil || len(r.Targets) != 0 {
 		t.Errorf("expected no targets, got %+v", r)
 	}
@@ -267,14 +273,14 @@ func TestRegisterPeer_expiredPeerNotTargeted(t *testing.T) {
 func TestRegisterPeer_unicastSkipsExpiredDuplicateIndex(t *testing.T) {
 	a := newTestApp()
 	host := createTestSession(t, a, "AAAAAA")
-	old, _ := a.joinSession("AAAAAA", "", "proj")
-	a.registerPeer(host.SessionToken, old.PeerToken, "10.0.0.2", 2000, broadcast)
+	old, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	a.registerPeer(host.SessionToken, old.PeerToken, ap("10.0.0.1:2000"), broadcast)
 	expirePeer(a, "AAAAAA", old.PeerToken)
-	repl, _ := a.joinSession("AAAAAA", "", "proj") // reuses index 1
-	a.registerPeer(host.SessionToken, repl.PeerToken, "10.0.0.3", 3000, keepalive)
+	repl, _ := a.joinSession("AAAAAA", "", "proj", testIP) // reuses index 1
+	a.registerPeer(host.SessionToken, repl.PeerToken, ap("10.0.0.1:3000"), keepalive)
 
-	r := a.registerPeer(host.SessionToken, host.PeerToken, "10.0.0.1", 1000, 1)
-	if r == nil || len(r.Targets) != 1 || r.Targets[0].address != "10.0.0.3" {
+	r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), 1)
+	if r == nil || len(r.Targets) != 1 || r.Targets[0] != ap("10.0.0.1:3000") {
 		t.Errorf("expected only the live peer at index 1, got %+v", r)
 	}
 }
@@ -285,7 +291,7 @@ func TestRegisterPeer_expiredSenderNotRevived(t *testing.T) {
 	expirePeer(a, "AAAAAA", host.PeerToken)
 	before := a.sessions["AAAAAA"].peers[host.PeerToken].lastSeen
 
-	if r := a.registerPeer(host.SessionToken, host.PeerToken, "10.0.0.1", 1000, broadcast); r != nil {
+	if r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), broadcast); r != nil {
 		t.Errorf("expected packet from expired peer to be dropped, got %+v", r)
 	}
 	if a.sessions["AAAAAA"].peers[host.PeerToken].lastSeen != before {
@@ -299,7 +305,7 @@ func TestRegisterPeer_expiredSessionNotRevived(t *testing.T) {
 	expireSession(a, "AAAAAA")
 	before := a.sessions["AAAAAA"].lastActivity
 
-	if r := a.registerPeer(host.SessionToken, host.PeerToken, "10.0.0.1", 1000, broadcast); r != nil {
+	if r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), broadcast); r != nil {
 		t.Errorf("expected packet for expired session to be dropped, got %+v", r)
 	}
 	if a.sessions["AAAAAA"].lastActivity != before {
@@ -310,11 +316,11 @@ func TestRegisterPeer_expiredSessionNotRevived(t *testing.T) {
 func TestRegisterPeer_keepaliveRefreshesWithoutForwarding(t *testing.T) {
 	a := newTestApp()
 	host := createTestSession(t, a, "AAAAAA")
-	p1, _ := a.joinSession("AAAAAA", "", "proj")
-	a.registerPeer(host.SessionToken, p1.PeerToken, "10.0.0.2", 2000, broadcast)
+	p1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	a.registerPeer(host.SessionToken, p1.PeerToken, ap("10.0.0.1:2000"), broadcast)
 	a.sessions["AAAAAA"].peers[host.PeerToken].lastSeen = nowMs() - 5_000
 
-	r := a.registerPeer(host.SessionToken, host.PeerToken, "10.0.0.1", 1000, keepalive)
+	r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), keepalive)
 	if r == nil || len(r.Targets) != 0 {
 		t.Errorf("expected keepalive to produce no targets, got %+v", r)
 	}
@@ -326,7 +332,7 @@ func TestRegisterPeer_keepaliveRefreshesWithoutForwarding(t *testing.T) {
 func TestCleanup_removesExpiredPeers(t *testing.T) {
 	a := newTestApp()
 	createTestSession(t, a, "AAAAAA")
-	p1, _ := a.joinSession("AAAAAA", "", "proj")
+	p1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
 	expirePeer(a, "AAAAAA", p1.PeerToken)
 	a.Cleanup()
 	if _, ok := a.sessions["AAAAAA"].peers[p1.PeerToken]; ok {
@@ -364,7 +370,7 @@ func TestCreateSession_sessionTokenExhausted(t *testing.T) {
 	a := newTestApp()
 	sequence(t, &randU32, 42)
 	createTestSession(t, a, "AAAAAA")
-	if _, err := a.createSession("proj", 0, 4, "BBBBBB", "", "", private); err == nil {
+	if _, err := a.createSession("proj", 0, 4, "BBBBBB", "", "", private, testIP); err == nil {
 		t.Error("expected error when no unique token can be generated")
 	}
 }
@@ -373,7 +379,7 @@ func TestJoinSession_peerTokenCollisionRetries(t *testing.T) {
 	a := newTestApp()
 	sequence(t, &randPeerToken, "aaaa0000", "aaaa0000", "bbbb0000")
 	host := createTestSession(t, a, "AAAAAA")
-	r, err := a.joinSession("AAAAAA", "", "proj")
+	r, err := a.joinSession("AAAAAA", "", "proj", testIP)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -387,8 +393,8 @@ func TestJoinSession_peerTokenCollisionRetries(t *testing.T) {
 
 func TestCreateSession_limitReached(t *testing.T) {
 	a := newTestApp()
-	a.createSession("proj", 1, 4, "AAAAAA", "", "", private)
-	if _, err := a.createSession("proj", 1, 4, "BBBBBB", "", "", private); err != errLimitReached {
+	a.createSession("proj", 1, 4, "AAAAAA", "", "", private, testIP)
+	if _, err := a.createSession("proj", 1, 4, "BBBBBB", "", "", private, testIP); err != errLimitReached {
 		t.Errorf("expected errLimitReached, got %v", err)
 	}
 }
@@ -403,7 +409,7 @@ func TestCreateSession_limitHoldsUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := a.createSession("proj", limit, 4, "", "", "", private); err == nil {
+			if _, err := a.createSession("proj", limit, 4, "", "", "", private, testIP); err == nil {
 				mu.Lock()
 				ok++
 				mu.Unlock()
@@ -413,5 +419,57 @@ func TestCreateSession_limitHoldsUnderConcurrency(t *testing.T) {
 	wg.Wait()
 	if ok != limit {
 		t.Errorf("expected exactly %d sessions, got %d", limit, ok)
+	}
+}
+
+// --- source IP binding ---
+
+func TestRegisterPeer_rejectsOtherIP(t *testing.T) {
+	a := newTestApp()
+	host := createTestSession(t, a, "AAAAAA")
+	p := a.sessions["AAAAAA"].peers[host.PeerToken]
+	p.lastSeen = nowMs() - 5_000
+	before := p.lastSeen
+
+	r, err := a.registerPeer(host.SessionToken, host.PeerToken, ap("203.0.113.9:1000"), broadcast)
+	var mismatch *ipMismatchError
+	if r != nil || !errors.As(err, &mismatch) || mismatch.joinIP != testIP {
+		t.Errorf("expected ipMismatchError with join IP %v, got %+v, %v", testIP, r, err)
+	}
+	if p.addr.IsValid() || p.lastSeen != before {
+		t.Error("packet from a different IP changed the peer")
+	}
+}
+
+func TestRegisterPeer_spoofedVictimGetsNoTraffic(t *testing.T) {
+	a := newTestApp()
+	host := createTestSession(t, a, "AAAAAA")
+	p1, _ := a.joinSession("AAAAAA", "", "proj", testIP)
+	// Attacker sends p1's first packet with the victim's IP as source.
+	a.registerPeer(host.SessionToken, p1.PeerToken, ap("198.51.100.7:4000"), keepalive)
+
+	r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), broadcast)
+	if r == nil || len(r.Targets) != 0 {
+		t.Errorf("expected no traffic towards the spoofed address, got %+v", r)
+	}
+}
+
+func TestRegisterPeer_acceptsPortChange(t *testing.T) {
+	a := newTestApp()
+	host := createTestSession(t, a, "AAAAAA")
+	a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1000"), keepalive)
+	if r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("10.0.0.1:1001"), keepalive); r == nil {
+		t.Fatal("expected packet from same IP with a new port to be accepted")
+	}
+	if got := a.sessions["AAAAAA"].peers[host.PeerToken].addr; got != ap("10.0.0.1:1001") {
+		t.Errorf("expected address updated to new port, got %v", got)
+	}
+}
+
+func TestRegisterPeer_acceptsIPv4MappedSource(t *testing.T) {
+	a := newTestApp()
+	host := createTestSession(t, a, "AAAAAA")
+	if r, _ := a.registerPeer(host.SessionToken, host.PeerToken, ap("[::ffff:10.0.0.1]:1000"), keepalive); r == nil {
+		t.Error("expected IPv4-mapped IPv6 source to match the IPv4 join IP")
 	}
 }

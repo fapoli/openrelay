@@ -13,13 +13,13 @@ import (
 )
 
 type Config struct {
-	PortHTTP      int
-	PortUDP       int
-	UDPBindHost   string
-	SessionTTLMs  int64
-	PeerTimeoutMs int64
-	// CleanupIntervalMs controls how often expired entries are freed from memory.
+	PortHTTP          int
+	PortUDP           int
+	UDPBindHost       string
+	SessionTTLMs      int64
+	PeerTimeoutMs     int64
 	CleanupIntervalMs int64
+	TrustedIPHeader   string
 }
 
 const defaultCleanupIntervalMs = 300_000
@@ -35,15 +35,15 @@ func LoadConfig() Config {
 	return Config{
 		PortHTTP:          envInt("PORT_HTTP", 3000),
 		PortUDP:           envInt("PORT_UDP", 7777),
-		UDPBindHost:       envStr("UDP_BIND_HOST", "0.0.0.0"),
+		UDPBindHost:       envStr("UDP_BIND_HOST", ""),
 		SessionTTLMs:      int64(envInt("SESSION_TTL_MS", 300_000)),
 		PeerTimeoutMs:     int64(envInt("PEER_TIMEOUT_MS", 10_000)),
 		CleanupIntervalMs: int64(envInt("CLEANUP_INTERVAL_MS", defaultCleanupIntervalMs)),
+		TrustedIPHeader:   envStr("TRUSTED_IP_HEADER", ""),
 	}
 }
 
-// CleanupInterval returns the sweep interval, falling back to the default for
-// non-positive values (time.Tick returns nil for those, which would stop the sweep).
+// time.Tick returns nil for non-positive durations, which would silently stop the sweep.
 func (c Config) CleanupInterval() time.Duration {
 	ms := c.CleanupIntervalMs
 	if ms <= 0 {
@@ -53,8 +53,6 @@ func (c Config) CleanupInterval() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// LoadProjects reads projects.yaml and resolves each project's API key from the
-// environment. Any invalid or incomplete configuration is an error.
 func LoadProjects() (map[string]*Project, error) {
 	data, err := os.ReadFile("projects.yaml")
 	if err != nil {

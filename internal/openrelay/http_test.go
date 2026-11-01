@@ -143,3 +143,61 @@ func TestRoutes_createSession_429_limitReached(t *testing.T) {
 		t.Errorf("expected 429, got %d", w.Code)
 	}
 }
+
+func TestClientIP(t *testing.T) {
+	req := func(remote string, headers map[string]string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	cases := []struct {
+		name    string
+		r       *http.Request
+		header  string
+		want    string
+		wantErr bool
+	}{
+		{"remote addr", req("192.0.2.1:5555", nil), "", "192.0.2.1", false},
+		{"remote addr ipv6", req("[2001:db8::1]:5555", nil), "", "2001:db8::1", false},
+		{"header ignored when not trusted", req("192.0.2.1:5555", map[string]string{"X-Real-IP": "198.51.100.7"}), "", "192.0.2.1", false},
+		{"trusted header", req("10.0.0.9:5555", map[string]string{"X-Real-IP": "198.51.100.7"}), "X-Real-IP", "198.51.100.7", false},
+		{"trusted header last entry", req("10.0.0.9:5555", map[string]string{"X-Forwarded-For": "6.6.6.6, 198.51.100.7"}), "X-Forwarded-For", "198.51.100.7", false},
+		{"trusted header missing", req("10.0.0.9:5555", nil), "X-Real-IP", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, ok := clientIP(c.r, c.header)
+			if ok == c.wantErr {
+				t.Fatalf("ok=%v, wantErr=%v", ok, c.wantErr)
+			}
+			if !c.wantErr && ip.String() != c.want {
+				t.Errorf("got %v, want %v", ip, c.want)
+			}
+		})
+	}
+}
+
+func TestRoutes_joinSession_recordsClientIP(t *testing.T) {
+	store, h := testServer()
+	do(t, h, "POST", "/sessions", map[string]any{"code": "QPCHK2"}, authHeader)
+	w := do(t, h, "POST", "/sessions/QPCHK2/join", map[string]any{}, authHeader)
+	var body struct {
+		PeerToken string `json:"peerToken"`
+	}
+	json.NewDecoder(w.Body).Decode(&body)
+	// httptest requests come from 192.0.2.1.
+	if got := store.sessions["QPCHK2"].peers[body.PeerToken].joinIP.String(); got != "192.0.2.1" {
+		t.Errorf("expected join IP 192.0.2.1, got %s", got)
+	}
+}
+
+func TestRoutes_trustedHeaderMissing_400(t *testing.T) {
+	store, h := testServer()
+	store.config.TrustedIPHeader = "X-Real-IP"
+	if w := do(t, h, "POST", "/sessions", map[string]any{}, authHeader); w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
