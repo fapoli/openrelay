@@ -38,7 +38,7 @@ func ListenRelay(addr string) (net.PacketConn, error) {
 	return conn, nil
 }
 
-func ServeRelay(store *SessionStore, conn net.PacketConn) {
+func ServeRelay(sessions *SessionStore, conn net.PacketConn) {
 	buf := make([]byte, 65535)
 	for {
 		n, src, err := conn.ReadFrom(buf)
@@ -52,29 +52,21 @@ func ServeRelay(store *SessionStore, conn net.PacketConn) {
 
 		token, peerToken, targetIndex, payload, err := parsePacket(buf[:n])
 		if err != nil {
-			slog.Warn("packet too short, dropping", "bytes", n, "from", src)
+			slog.Warn("dropping packet", "reason", err, "from", src)
 			continue
 		}
 
-		result, err := store.registerPeer(token, peerToken, src.(*net.UDPAddr).AddrPort(), targetIndex)
-		var mismatch *ipMismatchError
-		if errors.As(err, &mismatch) {
-			slog.Warn("source IP does not match join IP, dropping", "joinIP", mismatch.joinIP, "from", src)
-			continue
-		}
+		result, err := sessions.registerPeer(token, peerToken, src.(*net.UDPAddr).AddrPort(), targetIndex)
 		if err != nil {
-			slog.Warn("unknown or expired session or peer, dropping", "token", token, "from", src)
+			slog.Warn("dropping packet", "reason", err, "from", src)
 			continue
 		}
-
 		if len(result.Targets) == 0 {
 			continue
 		}
 
 		slog.Debug("forwarding", "token", token, "sender", result.SenderIndex, "peers", len(result.Targets), "bytes", len(payload))
-
 		forwarded := buildForwarded(result.SenderIndex, payload)
-
 		for _, t := range result.Targets {
 			go conn.WriteTo(forwarded, net.UDPAddrFromAddrPort(t))
 		}

@@ -120,6 +120,7 @@ Only set it if your proxy **overwrites** that header with the IP it saw. If the 
 | `SESSION_TTL_MS` | `300000`  | Session expiry after inactivity (ms) |
 | `PEER_TIMEOUT_MS`| `10000`   | Peer expiry after its last packet (ms) |
 | `CLEANUP_INTERVAL_MS` | `300000` | How often expired sessions/peers are freed from memory (ms) |
+| `RATE_LIMIT_PER_MIN` | `10` | Create, join and lookup requests per minute per client IP, shared (0 = off) |
 | `TRUSTED_IP_HEADER` | _(empty)_ | Header your reverse proxy sets with the real client IP. Empty = use the TCP connection address. See [Source IP binding](#source-ip-binding) |
 
 ---
@@ -127,6 +128,20 @@ Only set it if your proxy **overwrites** that header with the IP it saw. If the 
 ## API
 
 All endpoints require `Authorization: Bearer <apiKey>`.
+
+### Rate limits
+
+Create, join and lookup share one limit per client IP (`RATE_LIMIT_PER_MIN`, default 10 per minute). It stops password guessing on join, probing for session codes, and mass session creation. Requests over the limit get `429 Too Many Requests` with a `Retry-After` header. Unauthenticated requests count too, so a bad API key doesn't bypass the limit. Listing sessions and `/health` are not limited.
+
+- The client IP is determined the same way as for [source IP binding](#source-ip-binding): the TCP address, or `TRUSTED_IP_HEADER` behind a proxy. Without the header, all clients behind a proxy share one limit.
+- IPv6 clients are grouped by `/64`, since a single client usually controls a whole `/64`.
+- Players behind the same public IP (LAN party, campus, carrier-grade NAT) share a limit. The default leaves room for that; raise it if many players join from one IP.
+- Limits are per IP; an attacker with many IPs gets the limit on each of them.
+
+### Request limits
+
+- Request bodies over 4 KB are rejected with `413`.
+- Clients must send headers within 5 s and the full request within 10 s; idle keep-alive connections are closed after 60 s.
 
 ### Create a session
 

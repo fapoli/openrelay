@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func testServer() (*SessionStore, http.Handler) {
-	store := newTestApp()
-	return store, Routes(store)
+	sessions := newTestSessions()
+	return sessions, Routes(sessions, testProjects, HTTPOptions{})
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -30,6 +31,10 @@ func do(t *testing.T, h http.Handler, method, path string, body any, headers map
 }
 
 var authHeader = map[string]string{"Authorization": "Bearer test-key"}
+
+var testProjects = map[string]*Project{
+	"test-key": {ID: "proj", APIKey: "test-key", MaxSessions: 20, MaxPeersPerSession: 4},
+}
 
 func TestRoutes_createSession_401(t *testing.T) {
 	_, h := testServer()
@@ -181,7 +186,7 @@ func TestClientIP(t *testing.T) {
 }
 
 func TestRoutes_joinSession_recordsClientIP(t *testing.T) {
-	store, h := testServer()
+	sessions, h := testServer()
 	do(t, h, "POST", "/sessions", map[string]any{"code": "QPCHK2"}, authHeader)
 	w := do(t, h, "POST", "/sessions/QPCHK2/join", map[string]any{}, authHeader)
 	var body struct {
@@ -189,15 +194,151 @@ func TestRoutes_joinSession_recordsClientIP(t *testing.T) {
 	}
 	json.NewDecoder(w.Body).Decode(&body)
 	// httptest requests come from 192.0.2.1.
-	if got := store.sessions["QPCHK2"].peers[body.PeerToken].joinIP.String(); got != "192.0.2.1" {
+	if got := sessions.sessions["QPCHK2"].peers[body.PeerToken].joinIP.String(); got != "192.0.2.1" {
 		t.Errorf("expected join IP 192.0.2.1, got %s", got)
 	}
 }
 
 func TestRoutes_trustedHeaderMissing_400(t *testing.T) {
-	store, h := testServer()
-	store.config.TrustedIPHeader = "X-Real-IP"
+	h := limitedServer(HTTPOptions{TrustedIPHeader: "X-Real-IP"})
 	if w := do(t, h, "POST", "/sessions", map[string]any{}, authHeader); w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- rate limiting ---
+
+func limitedServer(opts HTTPOptions) http.Handler {
+	return Routes(newTestSessions(), testProjects, opts)
+}
+
+func doFrom(t *testing.T, h http.Handler, remote, method, path string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader("{}"))
+	req.RemoteAddr = remote
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+func TestRateLimit_429WithRetryAfter(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 2})
+	for i := 0; i < 2; i++ {
+		if w := doFrom(t, h, "192.0.2.1:1", "GET", "/sessions/ZZZZZZ", authHeader); w.Code != http.StatusNotFound {
+			t.Fatalf("request %d: expected 404, got %d", i, w.Code)
+		}
+	}
+	w := doFrom(t, h, "192.0.2.1:1", "GET", "/sessions/ZZZZZZ", authHeader)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header")
+	}
+	if !strings.Contains(w.Body.String(), `"error"`) {
+		t.Errorf("expected JSON error body, got %q", w.Body.String())
+	}
+}
+
+func TestRateLimit_perIP(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1})
+	doFrom(t, h, "192.0.2.1:1", "GET", "/sessions/ZZZZZZ", authHeader)
+	if w := doFrom(t, h, "192.0.2.1:2", "GET", "/sessions/ZZZZZZ", authHeader); w.Code != http.StatusTooManyRequests {
+		t.Errorf("same IP, other port: expected 429, got %d", w.Code)
+	}
+	if w := doFrom(t, h, "192.0.2.2:1", "GET", "/sessions/ZZZZZZ", authHeader); w.Code == http.StatusTooManyRequests {
+		t.Error("different IP should have its own limit")
+	}
+}
+
+func TestRateLimit_ipv6BucketedBy64(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1})
+	doFrom(t, h, "[2001:db8:1:2::1]:1", "GET", "/sessions/ZZZZZZ", authHeader)
+	if w := doFrom(t, h, "[2001:db8:1:2::ffff]:1", "GET", "/sessions/ZZZZZZ", authHeader); w.Code != http.StatusTooManyRequests {
+		t.Errorf("same /64: expected 429, got %d", w.Code)
+	}
+	if w := doFrom(t, h, "[2001:db8:1:3::1]:1", "GET", "/sessions/ZZZZZZ", authHeader); w.Code == http.StatusTooManyRequests {
+		t.Error("different /64 should have its own limit")
+	}
+}
+
+func TestRateLimit_listNotLimited(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1})
+	for i := 0; i < 5; i++ {
+		if w := doFrom(t, h, "192.0.2.1:1", "GET", "/sessions", authHeader); w.Code != http.StatusOK {
+			t.Fatalf("list request %d: got %d", i, w.Code)
+		}
+	}
+}
+
+func TestRateLimit_createJoinLookupShareBudget(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 2})
+	doFrom(t, h, "192.0.2.1:1", "POST", "/sessions", authHeader)
+	doFrom(t, h, "192.0.2.1:1", "GET", "/sessions/ZZZZZZ", authHeader)
+	if w := doFrom(t, h, "192.0.2.1:1", "POST", "/sessions/ZZZZZZ/join", authHeader); w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected join to share the create/lookup budget, got %d", w.Code)
+	}
+}
+
+func TestRateLimit_countsUnauthenticated(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1})
+	doFrom(t, h, "192.0.2.1:1", "POST", "/sessions/ZZZZZZ/join", nil) // 401, still counted
+	if w := doFrom(t, h, "192.0.2.1:1", "POST", "/sessions/ZZZZZZ/join", authHeader); w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestRateLimit_trustedHeaderIsKey(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1, TrustedIPHeader: "X-Real-IP"})
+	hdr := func(ip string) map[string]string {
+		return map[string]string{"Authorization": "Bearer test-key", "X-Real-IP": ip}
+	}
+	doFrom(t, h, "10.0.0.9:1", "GET", "/sessions/ZZZZZZ", hdr("198.51.100.1"))
+	if w := doFrom(t, h, "10.0.0.9:1", "GET", "/sessions/ZZZZZZ", hdr("198.51.100.2")); w.Code == http.StatusTooManyRequests {
+		t.Error("clients behind the same proxy should have separate limits")
+	}
+	if w := doFrom(t, h, "10.0.0.9:1", "GET", "/sessions/ZZZZZZ", hdr("198.51.100.1")); w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for repeated client IP, got %d", w.Code)
+	}
+	if w := doFrom(t, h, "10.0.0.9:1", "GET", "/sessions/ZZZZZZ", authHeader); w.Code != http.StatusBadRequest {
+		t.Errorf("missing trusted header: expected 400, got %d", w.Code)
+	}
+}
+
+func TestHealth_notRateLimited(t *testing.T) {
+	h := limitedServer(HTTPOptions{RateLimitPerMin: 1})
+	for i := 0; i < 20; i++ {
+		if w := doFrom(t, h, "192.0.2.1:1", "GET", "/health", nil); w.Code != http.StatusOK {
+			t.Fatalf("health request %d: got %d", i, w.Code)
+		}
+	}
+}
+
+// --- hardening ---
+
+func TestRoutes_bodyTooLarge_413(t *testing.T) {
+	_, h := testServer()
+	big := `{"label":"` + strings.Repeat("x", maxBodyBytes) + `"}`
+	for _, path := range []string{"/sessions", "/sessions/ZZZZZZ/join"} {
+		req := httptest.NewRequest("POST", path, strings.NewReader(big))
+		req.Header.Set("Authorization", "Bearer test-key")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: expected 413, got %d", path, w.Code)
+		}
+	}
+}
+
+func TestNewHTTPServer_timeouts(t *testing.T) {
+	s := NewHTTPServer(":3123", newTestSessions(), testProjects, HTTPOptions{})
+	if s.Addr != ":3123" || s.Handler == nil {
+		t.Errorf("expected addr :3123 and a handler, got %q, %v", s.Addr, s.Handler)
+	}
+	if s.ReadHeaderTimeout == 0 || s.ReadTimeout == 0 || s.WriteTimeout == 0 || s.IdleTimeout == 0 || s.MaxHeaderBytes == 0 {
+		t.Errorf("expected all timeouts and header limit set, got %+v", s)
 	}
 }

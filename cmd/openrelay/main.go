@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -14,28 +13,31 @@ import (
 
 func main() {
 	cfg := openrelay.LoadConfig()
-
 	projects, err := openrelay.LoadProjects()
 	if err != nil {
 		fatal("invalid project configuration", err)
 	}
-	store := openrelay.NewSessionStore(cfg, projects)
+	sessions := openrelay.NewSessionStore(cfg.SessionTTLMs, cfg.PeerTimeoutMs)
 
 	conn, err := openrelay.ListenRelay(net.JoinHostPort(cfg.UDPBindHost, strconv.Itoa(cfg.PortUDP)))
 	if err != nil {
 		fatal("UDP relay failed to start", err)
 	}
-	go openrelay.ServeRelay(store, conn)
+	go openrelay.ServeRelay(sessions, conn)
 
 	go func() {
 		for range time.Tick(cfg.CleanupInterval()) {
-			store.Cleanup()
+			sessions.Cleanup()
 		}
 	}()
 
-	addr := fmt.Sprintf(":%d", cfg.PortHTTP)
-	slog.Info("HTTP signaling listening", "port", cfg.PortHTTP)
-	if err := http.ListenAndServe(addr, openrelay.Routes(store)); err != nil {
+	server := openrelay.NewHTTPServer(fmt.Sprintf(":%d", cfg.PortHTTP), sessions, projects, openrelay.HTTPOptions{
+		TrustedIPHeader: cfg.TrustedIPHeader,
+		RateLimitPerMin: cfg.RateLimitPerMin,
+	})
+	slog.Info("HTTP signaling listening", "addr", server.Addr)
+	err = server.ListenAndServe()
+	if err != nil {
 		fatal("HTTP server error", err)
 	}
 }

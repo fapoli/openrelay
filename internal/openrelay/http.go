@@ -3,64 +3,94 @@ package openrelay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/netip"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
 )
+
+const maxBodyBytes = 4 << 10
 
 type contextKey int
 
-const projectKey contextKey = iota
-
-func withProject(ctx context.Context, p *Project) context.Context {
-	return context.WithValue(ctx, projectKey, p)
-}
+const (
+	projectKey contextKey = iota
+	clientIPKey
+)
 
 func projectFromCtx(ctx context.Context) *Project {
 	return ctx.Value(projectKey).(*Project)
 }
 
+func clientIPFromCtx(ctx context.Context) netip.Addr {
+	return ctx.Value(clientIPKey).(netip.Addr)
+}
+
 var validCode = regexp.MustCompile(`^[A-HJ-NP-Z2-9]{6}$`)
 
-func Routes(store *SessionStore) http.Handler {
+type HTTPOptions struct {
+	TrustedIPHeader string
+	RateLimitPerMin int
+}
+
+func NewHTTPServer(addr string, sessions *SessionStore, projects map[string]*Project, opts HTTPOptions) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           Routes(sessions, projects, opts),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+}
+
+func Routes(sessions *SessionStore, projects map[string]*Project, opts HTTPOptions) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(limitBody)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(auth(store))
-		r.Post("/sessions", handleCreateSession(store))
-		r.Get("/sessions", handleListSessions(store))
-		r.Post("/sessions/{code}/join", handleJoinSession(store))
-		r.Get("/sessions/{code}", handleGetSession(store))
+		r.Use(resolveClientIP(opts.TrustedIPHeader))
+		// One counter shared by create, join and lookup, so they draw from the same budget.
+		// List is a cheap read that lobbies poll, so it is not limited.
+		limit := rateLimit(opts.RateLimitPerMin)
+		r.With(limit, requireAPIKey(projects)).Post("/sessions", handleCreateSession(sessions))
+		r.With(requireAPIKey(projects)).Get("/sessions", handleListSessions(sessions))
+		r.With(limit, requireAPIKey(projects)).Post("/sessions/{code}/join", handleJoinSession(sessions))
+		r.With(limit, requireAPIKey(projects)).Get("/sessions/{code}", handleGetSession(sessions))
 	})
 
 	return r
 }
 
-func auth(store *SessionStore) func(http.Handler) http.Handler {
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func resolveClientIP(trustedHeader string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			a := r.Header.Get("Authorization")
-			if !strings.HasPrefix(a, "Bearer ") {
-				writeErr(w, http.StatusUnauthorized, "missing authorization header")
-				return
-			}
-			project, ok := store.projects[a[7:]]
+			ip, ok := clientIP(r, trustedHeader)
 			if !ok {
-				writeErr(w, http.StatusUnauthorized, "invalid API key")
+				writeErr(w, http.StatusBadRequest, "cannot determine client IP")
 				return
 			}
-			r = r.WithContext(withProject(r.Context(), project))
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientIPKey, ip)))
 		})
 	}
 }
@@ -80,15 +110,41 @@ func clientIP(r *http.Request, trustedHeader string) (netip.Addr, bool) {
 	return ap.Addr().Unmap(), err == nil
 }
 
-func handleCreateSession(store *SessionStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		project := projectFromCtx(r.Context())
-		ip, ok := clientIP(r, store.config.TrustedIPHeader)
-		if !ok {
-			writeErr(w, http.StatusBadRequest, "cannot determine client IP")
-			return
-		}
+// IPv6 clients are bucketed by /64, since a single client usually controls a whole /64.
+func rateLimit(perMinute int) func(http.Handler) http.Handler {
+	if perMinute <= 0 {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	key := func(r *http.Request) (string, error) {
+		return httprate.CanonicalizeIP(clientIPFromCtx(r.Context()).String()), nil
+	}
+	return httprate.LimitBy(perMinute, time.Minute, key,
+		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+			writeErr(w, http.StatusTooManyRequests, "rate limit exceeded")
+		}),
+	)
+}
 
+func requireAPIKey(projects map[string]*Project) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a := r.Header.Get("Authorization")
+			if !strings.HasPrefix(a, "Bearer ") {
+				writeErr(w, http.StatusUnauthorized, "missing authorization header")
+				return
+			}
+			project, ok := projects[a[7:]]
+			if !ok {
+				writeErr(w, http.StatusUnauthorized, "invalid API key")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), projectKey, project)))
+		})
+	}
+}
+
+func handleCreateSession(sessions *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Code       string `json:"code"`
 			Password   string `json:"password"`
@@ -96,6 +152,10 @@ func handleCreateSession(store *SessionStore) http.HandlerFunc {
 			Visibility string `json:"visibility"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if isBodyTooLarge(err) {
+				writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
 			writeErr(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
@@ -123,98 +183,65 @@ func handleCreateSession(store *SessionStore) http.HandlerFunc {
 			return
 		}
 
-		result, err := store.createSession(project.ID, project.MaxSessions, project.MaxPeersPerSession, body.Code, body.Password, label, vis, ip)
-		if err == errConflict {
-			writeErr(w, http.StatusConflict, err.Error())
-			return
-		}
-		if err == errLimitReached {
-			writeErr(w, http.StatusTooManyRequests, err.Error())
-			return
-		}
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "failed to create session")
-			return
-		}
-
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"code":         result.Code,
-			"password":     nullableString(result.Password),
-			"sessionToken": result.SessionToken,
-			"peerToken":    result.PeerToken,
-			"peerIndex":    result.PeerIndex,
+		result, err := sessions.createSession(projectFromCtx(r.Context()), newSession{
+			Code:       body.Code,
+			Password:   body.Password,
+			Label:      label,
+			Visibility: vis,
+			IP:         clientIPFromCtx(r.Context()),
 		})
+		switch {
+		case err == errConflict:
+			writeErr(w, http.StatusConflict, err.Error())
+		case err == errLimitReached:
+			writeErr(w, http.StatusTooManyRequests, err.Error())
+		case err != nil:
+			writeErr(w, http.StatusInternalServerError, "failed to create session")
+		default:
+			writeJSON(w, http.StatusCreated, result)
+		}
 	}
 }
 
-func handleJoinSession(store *SessionStore) http.HandlerFunc {
+func handleJoinSession(sessions *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		project := projectFromCtx(r.Context())
-		code := chi.URLParam(r, "code")
-		ip, ok := clientIP(r, store.config.TrustedIPHeader)
-		if !ok {
-			writeErr(w, http.StatusBadRequest, "cannot determine client IP")
-			return
-		}
-
 		var body struct {
 			Password string `json:"password"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); isBodyTooLarge(err) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 
-		result, err := store.joinSession(code, body.Password, project.ID, ip)
+		result, err := sessions.joinSession(chi.URLParam(r, "code"), body.Password, projectFromCtx(r.Context()).ID, clientIPFromCtx(r.Context()))
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "invalid code or password")
 			return
 		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"sessionToken": result.SessionToken,
-			"peerToken":    result.PeerToken,
-			"peerIndex":    result.PeerIndex,
-		})
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
-func handleListSessions(store *SessionStore) http.HandlerFunc {
+func handleListSessions(sessions *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		project := projectFromCtx(r.Context())
-		sessions := store.publicSessions(project.ID)
-
-		type item struct {
-			Code             string `json:"code"`
-			Label            string `json:"label"`
-			Peers            int    `json:"peers"`
-			MaxPeers         int    `json:"maxPeers"`
-			PasswordRequired bool   `json:"passwordRequired"`
-		}
-		items := make([]item, len(sessions))
-		for i, s := range sessions {
-			items[i] = item{Code: s.Code, Label: s.Label, Peers: s.Peers, MaxPeers: s.MaxPeers, PasswordRequired: s.PasswordRequired}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"sessions": items})
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions.publicSessions(projectFromCtx(r.Context()).ID)})
 	}
 }
 
-func handleGetSession(store *SessionStore) http.HandlerFunc {
+func handleGetSession(sessions *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		project := projectFromCtx(r.Context())
-		code := chi.URLParam(r, "code")
-
-		info, err := store.sessionInfo(code, project.ID)
+		info, err := sessions.sessionInfo(chi.URLParam(r, "code"), projectFromCtx(r.Context()).ID)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "session not found")
 			return
 		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"code":             info.Code,
-			"label":            nullableString(info.Label),
-			"visibility":       info.Visibility,
-			"passwordRequired": info.PasswordRequired,
-			"peers":            info.Peers,
-		})
+		writeJSON(w, http.StatusOK, info)
 	}
+}
+
+func isBodyTooLarge(err error) bool {
+	var e *http.MaxBytesError
+	return errors.As(err, &e)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -225,11 +252,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func nullableString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }

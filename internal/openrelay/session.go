@@ -24,12 +24,7 @@ var errNotFound = errors.New("session not found")
 var errConflict = errors.New("code already in use")
 var errLimitReached = errors.New("max sessions reached for this project")
 var errUnknownPeer = errors.New("unknown or expired session or peer")
-
-type ipMismatchError struct{ joinIP netip.Addr }
-
-func (e *ipMismatchError) Error() string {
-	return "source IP does not match join IP " + e.joinIP.String()
-}
+var errIPMismatch = errors.New("source IP does not match join IP")
 
 var (
 	randU32       = randomU32
@@ -67,54 +62,54 @@ type session struct {
 // Expiry is logical: every operation ignores expired entries and never revives them.
 // Cleanup only frees their memory.
 type SessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*session
-	tokens   map[uint32]string
-	projects map[string]*Project
-	config   Config
+	mu            sync.RWMutex
+	sessions      map[string]*session
+	tokens        map[uint32]string
+	sessionTTLMs  int64
+	peerTimeoutMs int64
 }
 
-func NewSessionStore(cfg Config, projects map[string]*Project) *SessionStore {
+func NewSessionStore(sessionTTLMs, peerTimeoutMs int64) *SessionStore {
 	return &SessionStore{
-		sessions: make(map[string]*session),
-		tokens:   make(map[uint32]string),
-		projects: projects,
-		config:   cfg,
+		sessions:      make(map[string]*session),
+		tokens:        make(map[uint32]string),
+		sessionTTLMs:  sessionTTLMs,
+		peerTimeoutMs: peerTimeoutMs,
 	}
 }
 
 // --- expiry ---
 
-func (a *SessionStore) sessionExpired(s *session, now int64) bool {
-	return now-s.lastActivity > a.config.SessionTTLMs
+func (ss *SessionStore) sessionExpired(s *session, now int64) bool {
+	return now-s.lastActivity > ss.sessionTTLMs
 }
 
-func (a *SessionStore) peerExpired(p *peer, now int64) bool {
-	return now-p.lastSeen > a.config.PeerTimeoutMs
+func (ss *SessionStore) peerExpired(p *peer, now int64) bool {
+	return now-p.lastSeen > ss.peerTimeoutMs
 }
 
-func (a *SessionStore) liveSession(code, projectID string, now int64) (*session, bool) {
-	s, ok := a.sessions[code]
-	if !ok || s.projectID != projectID || a.sessionExpired(s, now) {
+func (ss *SessionStore) liveSession(code, projectID string, now int64) (*session, bool) {
+	s, ok := ss.sessions[code]
+	if !ok || s.projectID != projectID || ss.sessionExpired(s, now) {
 		return nil, false
 	}
 	return s, true
 }
 
-func (a *SessionStore) livePeerCount(s *session, now int64) int {
+func (ss *SessionStore) livePeerCount(s *session, now int64) int {
 	n := 0
 	for _, p := range s.peers {
-		if !a.peerExpired(p, now) {
+		if !ss.peerExpired(p, now) {
 			n++
 		}
 	}
 	return n
 }
 
-func (a *SessionStore) lowestFreeIndex(s *session, now int64) (uint32, bool) {
+func (ss *SessionStore) lowestFreeIndex(s *session, now int64) (uint32, bool) {
 	var used [maxPeersLimit]bool
 	for _, p := range s.peers {
-		if !a.peerExpired(p, now) && p.index < maxPeersLimit {
+		if !ss.peerExpired(p, now) && p.index < maxPeersLimit {
 			used[p.index] = true
 		}
 	}
@@ -126,20 +121,20 @@ func (a *SessionStore) lowestFreeIndex(s *session, now int64) (uint32, bool) {
 	return 0, false
 }
 
-func (a *SessionStore) liveSessionCount(projectID string, now int64) int {
+func (ss *SessionStore) liveSessionCount(projectID string, now int64) int {
 	n := 0
-	for _, s := range a.sessions {
-		if s.projectID == projectID && !a.sessionExpired(s, now) {
+	for _, s := range ss.sessions {
+		if s.projectID == projectID && !ss.sessionExpired(s, now) {
 			n++
 		}
 	}
 	return n
 }
 
-func (a *SessionStore) newSessionToken() (uint32, error) {
+func (ss *SessionStore) newSessionToken() (uint32, error) {
 	for i := 0; i < maxTokenAttempts; i++ {
 		t := randU32()
-		if _, taken := a.tokens[t]; !taken {
+		if _, taken := ss.tokens[t]; !taken {
 			return t, nil
 		}
 	}
@@ -156,14 +151,14 @@ func newPeerToken(s *session) (string, error) {
 	return "", fmt.Errorf("failed to generate unique peer token")
 }
 
-func (a *SessionStore) codeTaken(code string, now int64) bool {
-	s, ok := a.sessions[code]
+func (ss *SessionStore) codeTaken(code string, now int64) bool {
+	s, ok := ss.sessions[code]
 	if !ok {
 		return false
 	}
-	if a.sessionExpired(s, now) {
-		delete(a.tokens, s.token)
-		delete(a.sessions, code)
+	if ss.sessionExpired(s, now) {
+		delete(ss.tokens, s.token)
+		delete(ss.sessions, code)
 		return false
 	}
 	return true
@@ -171,30 +166,39 @@ func (a *SessionStore) codeTaken(code string, now int64) bool {
 
 // --- session management ---
 
+type newSession struct {
+	Code       string
+	Password   string
+	Label      string
+	Visibility visibility
+	IP         netip.Addr
+}
+
 type CreateResult struct {
-	Code         string
-	Password     string
-	SessionToken uint32
-	PeerToken    string
-	PeerIndex    uint32
+	Code         string  `json:"code"`
+	Password     *string `json:"password"`
+	SessionToken uint32  `json:"sessionToken"`
+	PeerToken    string  `json:"peerToken"`
+	PeerIndex    uint32  `json:"peerIndex"`
 }
 
 // The limit is checked under the same lock as the insert so concurrent creates cannot exceed it.
-func (a *SessionStore) createSession(projectID string, maxSessions, maxPeers int, code, password, label string, vis visibility, ip netip.Addr) (*CreateResult, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (ss *SessionStore) createSession(p *Project, ns newSession) (*CreateResult, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 
 	now := nowMs()
 
-	if maxSessions > 0 && a.liveSessionCount(projectID, now) >= maxSessions {
+	if p.MaxSessions > 0 && ss.liveSessionCount(p.ID, now) >= p.MaxSessions {
 		return nil, errLimitReached
 	}
 
+	code := ns.Code
 	if code == "" {
 		found := false
 		for i := 0; i < 200; i++ {
 			code = randomCode()
-			if !a.codeTaken(code, now) {
+			if !ss.codeTaken(code, now) {
 				found = true
 				break
 			}
@@ -202,55 +206,55 @@ func (a *SessionStore) createSession(projectID string, maxSessions, maxPeers int
 		if !found {
 			return nil, fmt.Errorf("failed to generate unique code")
 		}
-	} else if a.codeTaken(code, now) {
+	} else if ss.codeTaken(code, now) {
 		return nil, errConflict
 	}
 
-	token, err := a.newSessionToken()
+	token, err := ss.newSessionToken()
 	if err != nil {
 		return nil, err
 	}
 	peerToken := randPeerToken()
 	var pwHash string
-	if password != "" {
-		pwHash = hashPassword(password)
+	if ns.Password != "" {
+		pwHash = hashPassword(ns.Password)
 	}
 
-	a.sessions[code] = &session{
+	ss.sessions[code] = &session{
 		token:        token,
 		passwordHash: pwHash,
-		visibility:   vis,
-		label:        label,
-		projectID:    projectID,
+		visibility:   ns.Visibility,
+		label:        ns.Label,
+		projectID:    p.ID,
 		lastActivity: now,
-		maxPeers:     maxPeers,
-		peers:        map[string]*peer{peerToken: {index: 0, joinIP: ip.Unmap(), lastSeen: now}},
+		maxPeers:     p.MaxPeersPerSession,
+		peers:        map[string]*peer{peerToken: {index: 0, joinIP: ns.IP.Unmap(), lastSeen: now}},
 	}
-	a.tokens[token] = code
+	ss.tokens[token] = code
 
-	slog.Info("session created", "project", projectID, "code", code, "maxPeers", maxPeers)
-	return &CreateResult{Code: code, Password: password, SessionToken: token, PeerToken: peerToken, PeerIndex: 0}, nil
+	slog.Info("session created", "project", p.ID, "code", code, "maxPeers", p.MaxPeersPerSession)
+	return &CreateResult{Code: code, Password: optional(ns.Password), SessionToken: token, PeerToken: peerToken, PeerIndex: 0}, nil
 }
 
 type JoinResult struct {
-	SessionToken uint32
-	PeerToken    string
-	PeerIndex    uint32
+	SessionToken uint32 `json:"sessionToken"`
+	PeerToken    string `json:"peerToken"`
+	PeerIndex    uint32 `json:"peerIndex"`
 }
 
-func (a *SessionStore) joinSession(code, password, projectID string, ip netip.Addr) (*JoinResult, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (ss *SessionStore) joinSession(code, password, projectID string, ip netip.Addr) (*JoinResult, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 
 	now := nowMs()
-	s, ok := a.liveSession(code, projectID, now)
+	s, ok := ss.liveSession(code, projectID, now)
 	if !ok {
 		return nil, errNotFound
 	}
 	if s.passwordHash != "" && hashPassword(password) != s.passwordHash {
 		return nil, errNotFound
 	}
-	idx, ok := a.lowestFreeIndex(s, now)
+	idx, ok := ss.lowestFreeIndex(s, now)
 	if !ok {
 		return nil, errNotFound
 	}
@@ -267,26 +271,26 @@ func (a *SessionStore) joinSession(code, password, projectID string, ip netip.Ad
 }
 
 type PublicSession struct {
-	Code             string
-	Label            string
-	Peers            int
-	MaxPeers         int
-	PasswordRequired bool
+	Code             string `json:"code"`
+	Label            string `json:"label"`
+	Peers            int    `json:"peers"`
+	MaxPeers         int    `json:"maxPeers"`
+	PasswordRequired bool   `json:"passwordRequired"`
 }
 
-func (a *SessionStore) publicSessions(projectID string) []PublicSession {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+func (ss *SessionStore) publicSessions(projectID string) []PublicSession {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	now := nowMs()
-	var result []PublicSession
-	for code, s := range a.sessions {
-		if s.projectID != projectID || s.visibility != public || a.sessionExpired(s, now) {
+	result := []PublicSession{}
+	for code, s := range ss.sessions {
+		if s.projectID != projectID || s.visibility != public || ss.sessionExpired(s, now) {
 			continue
 		}
 		result = append(result, PublicSession{
 			Code:             code,
 			Label:            s.label,
-			Peers:            a.livePeerCount(s, now),
+			Peers:            ss.livePeerCount(s, now),
 			MaxPeers:         s.maxPeers,
 			PasswordRequired: s.passwordHash != "",
 		})
@@ -295,27 +299,27 @@ func (a *SessionStore) publicSessions(projectID string) []PublicSession {
 }
 
 type SessionInfo struct {
-	Code             string
-	Label            string
-	Visibility       visibility
-	PasswordRequired bool
-	Peers            int
+	Code             string     `json:"code"`
+	Label            *string    `json:"label"`
+	Visibility       visibility `json:"visibility"`
+	PasswordRequired bool       `json:"passwordRequired"`
+	Peers            int        `json:"peers"`
 }
 
-func (a *SessionStore) sessionInfo(code, projectID string) (*SessionInfo, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+func (ss *SessionStore) sessionInfo(code, projectID string) (*SessionInfo, error) {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	now := nowMs()
-	s, ok := a.liveSession(code, projectID, now)
+	s, ok := ss.liveSession(code, projectID, now)
 	if !ok {
 		return nil, errNotFound
 	}
 	return &SessionInfo{
 		Code:             code,
-		Label:            s.label,
+		Label:            optional(s.label),
 		Visibility:       s.visibility,
 		PasswordRequired: s.passwordHash != "",
-		Peers:            a.livePeerCount(s, now),
+		Peers:            ss.livePeerCount(s, now),
 	}, nil
 }
 
@@ -324,25 +328,25 @@ type ForwardResult struct {
 	Targets     []netip.AddrPort
 }
 
-func (a *SessionStore) registerPeer(token uint32, peerToken string, src netip.AddrPort, targetIndex byte) (*ForwardResult, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (ss *SessionStore) registerPeer(token uint32, peerToken string, src netip.AddrPort, targetIndex byte) (*ForwardResult, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 
 	now := nowMs()
-	code, ok := a.tokens[token]
+	code, ok := ss.tokens[token]
 	if !ok {
 		return nil, errUnknownPeer
 	}
-	s, ok := a.sessions[code]
-	if !ok || a.sessionExpired(s, now) {
+	s, ok := ss.sessions[code]
+	if !ok || ss.sessionExpired(s, now) {
 		return nil, errUnknownPeer
 	}
 	p, ok := s.peers[peerToken]
-	if !ok || a.peerExpired(p, now) {
+	if !ok || ss.peerExpired(p, now) {
 		return nil, errUnknownPeer
 	}
 	if src.Addr().Unmap() != p.joinIP {
-		return nil, &ipMismatchError{joinIP: p.joinIP}
+		return nil, fmt.Errorf("%w %s", errIPMismatch, p.joinIP)
 	}
 
 	p.addr = src
@@ -355,7 +359,7 @@ func (a *SessionStore) registerPeer(token uint32, peerToken string, src netip.Ad
 
 	var targets []netip.AddrPort
 	for pt, op := range s.peers {
-		if pt == peerToken || !op.addr.IsValid() || a.peerExpired(op, now) {
+		if pt == peerToken || !op.addr.IsValid() || ss.peerExpired(op, now) {
 			continue
 		}
 		if targetIndex != broadcast && op.index != uint32(targetIndex) {
@@ -367,21 +371,21 @@ func (a *SessionStore) registerPeer(token uint32, peerToken string, src netip.Ad
 	return &ForwardResult{SenderIndex: p.index, Targets: targets}, nil
 }
 
-func (a *SessionStore) Cleanup() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (ss *SessionStore) Cleanup() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 
 	now := nowMs()
 	expired := 0
-	for code, s := range a.sessions {
-		if a.sessionExpired(s, now) {
-			delete(a.tokens, s.token)
-			delete(a.sessions, code)
+	for code, s := range ss.sessions {
+		if ss.sessionExpired(s, now) {
+			delete(ss.tokens, s.token)
+			delete(ss.sessions, code)
 			expired++
 			continue
 		}
 		for pt, p := range s.peers {
-			if a.peerExpired(p, now) {
+			if ss.peerExpired(p, now) {
 				delete(s.peers, pt)
 			}
 		}
@@ -417,6 +421,13 @@ func randomHex4() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func optional(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func hashPassword(pw string) string {

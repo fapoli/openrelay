@@ -20,6 +20,8 @@ type Config struct {
 	PeerTimeoutMs     int64
 	CleanupIntervalMs int64
 	TrustedIPHeader   string
+	// Requests per minute per client IP; 0 disables the limit.
+	RateLimitPerMin int
 }
 
 const defaultCleanupIntervalMs = 300_000
@@ -40,6 +42,7 @@ func LoadConfig() Config {
 		PeerTimeoutMs:     int64(envInt("PEER_TIMEOUT_MS", 10_000)),
 		CleanupIntervalMs: int64(envInt("CLEANUP_INTERVAL_MS", defaultCleanupIntervalMs)),
 		TrustedIPHeader:   envStr("TRUSTED_IP_HEADER", ""),
+		RateLimitPerMin:   envInt("RATE_LIMIT_PER_MIN", 10),
 	}
 }
 
