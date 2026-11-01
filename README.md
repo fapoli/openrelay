@@ -12,7 +12,7 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 - **Public lobby** — list visible sessions and inspect their peers before joining
 - **Project isolation** — multiple games on the same instance, each with its own API key and session limits
 - **No database** — entirely in-memory, zero infrastructure dependencies
-- **Stateless sessions** — sessions expire automatically after inactivity
+- **Stateless sessions** — sessions and peers expire automatically after inactivity
 - **Self-hosted** — deploy anywhere that runs Go or Docker
 
 ---
@@ -33,6 +33,7 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 3. Each player calls `POST /sessions/:code/join` with the password → receives `sessionToken`, `peerToken`, and their assigned `peerIndex`
 4. All players open a UDP socket to the relay and prefix every packet with a 9-byte header: `[sessionToken (4 bytes BE)][peerToken (4 bytes)][targetPeerIndex (1 byte)]`
 5. The relay identifies the peer via `peerToken`, then forwards the packet to the target peer (unicast) or all other peers (broadcast, `targetPeerIndex = 0xFF`), prepending the sender's `peerIndex` as a 4-byte big-endian header
+6. Every peer keeps sending — game data or keepalives (`targetPeerIndex = 0xFE`) — at least once per `PEER_TIMEOUT_MS`, otherwise it expires
 
 The relay never inspects packet payload — it only reads the 9-byte header to identify and route traffic, and prepends the sender index so clients can distinguish peers.
 
@@ -47,7 +48,7 @@ Edit `projects.yaml`:
 ```yaml
 projects:
   - id: example-game
-    maxPeersPerSession: 16 # max peers per session (default: 16)
+    maxPeersPerSession: 16 # max peers per session, 1–254 (default: 16)
     maxSessions: 50 # max concurrent sessions, 0 = unlimited (default: 0)
 ```
 
@@ -59,7 +60,7 @@ Generate a secret key for each project (e.g. `openssl rand -hex 32`) and set it 
 EXAMPLE_GAME_API_KEY=$(openssl rand -hex 32)
 ```
 
-So `example-game` → `EXAMPLE_GAME_API_KEY`. Your game client uses this key in the `Authorization` header when calling the HTTP API.
+So `example-game` → `EXAMPLE_GAME_API_KEY`. Your game client uses this key in the `Authorization` header when calling the HTTP API. Every project listed in `projects.yaml` must have its key set, and each project needs a distinct key.
 
 ### 3. Run
 
@@ -68,6 +69,14 @@ go run ./cmd/openrelay
 ```
 
 The HTTP signaling server starts on port `3000` and the UDP relay on port `7777`.
+
+The server refuses to start (exit code `1`) if the configuration is unusable:
+
+- `projects.yaml` is missing, unparsable, or lists no projects
+- a project has an empty or duplicate `id`
+- `maxPeersPerSession` is outside `1–254`
+- a project's API key environment variable is not set, or two projects share a key
+- the UDP relay port cannot be bound
 
 ---
 
@@ -103,6 +112,8 @@ Make sure to expose **both** the HTTP port (TCP) and the relay port (UDP).
 | `PORT_UDP`       | `7777`    | UDP relay port                       |
 | `UDP_BIND_HOST`  | `0.0.0.0` | UDP bind address                     |
 | `SESSION_TTL_MS` | `300000`  | Session expiry after inactivity (ms) |
+| `PEER_TIMEOUT_MS`| `10000`   | Peer expiry after its last packet (ms) |
+| `CLEANUP_INTERVAL_MS` | `300000` | How often expired sessions/peers are freed from memory (ms) |
 
 ---
 
@@ -124,7 +135,7 @@ Content-Type: application/json
 | `label`      | string (max 64 chars)     | No       | Human-readable name shown in the lobby                              |
 | `visibility` | `"public"` \| `"private"` | No       | Default `"private"`. Public sessions appear in `GET /sessions`      |
 
-Returns `409 Conflict` if the code is already in use.
+Returns `409 Conflict` if the code is already in use, and `429 Too Many Requests` if the project has reached `maxSessions`.
 
 Response:
 
@@ -183,7 +194,7 @@ Returns all visible sessions for the project.
 }
 ```
 
-`peers` reflects only active peers (seen within the last 10 seconds).
+`peers` reflects only live peers (seen within the last `PEER_TIMEOUT_MS`).
 
 ### Session lobby
 
@@ -203,7 +214,7 @@ Returns details and the active peer count for any session (public or private).
 }
 ```
 
-Only active peers appear in the count.
+Only live peers appear in the count.
 
 ### Health check
 
@@ -222,13 +233,26 @@ Every packet sent to the relay must begin with a 9-byte header:
 ```
 [0–3]  sessionToken    (uint32 BE)
 [4–7]  peerToken       (4 bytes, from session response)
-[8]    targetPeerIndex (uint8; 0xFF = broadcast to all peers)
+[8]    targetPeerIndex (uint8; 0xFE = keepalive, 0xFF = broadcast to all peers)
 [9…]   payload
 ```
 
-Set `targetPeerIndex` to the recipient's `peerIndex` for unicast, or `0xFF` to broadcast to all peers in the session.
+Set `targetPeerIndex` to the recipient's `peerIndex` for unicast, `0xFF` to broadcast to all peers in the session, or `0xFE` for a keepalive. A keepalive refreshes the sender and is not forwarded; its payload may be empty (the 9-byte header alone is valid).
 
 Peers are registered automatically on their first packet — no explicit handshake required.
+
+### Peer liveness
+
+- Send the first UDP packet right after creating or joining the session.
+- After that, send something — game data or a keepalive — more often than `PEER_TIMEOUT_MS` (e.g. a keepalive every `PEER_TIMEOUT_MS / 3` while idle).
+- A peer silent for longer than `PEER_TIMEOUT_MS` expires immediately: it stops receiving traffic, its packets are dropped, and its slot is freed. Expiry is final — rejoin via `POST /sessions/:code/join` to get a new `peerToken`.
+- A session with no packets or joins for `SESSION_TTL_MS` expires the same way; its code becomes available again.
+
+Expired sessions and peers are ignored immediately; their memory is reclaimed by a background sweep every `CLEANUP_INTERVAL_MS` (default 5 minutes). The interval only affects memory, not behavior.
+
+### Peer indices
+
+A `peerIndex` is a slot in `0..maxPeersPerSession-1`, not a permanent identity. A joining peer gets the lowest free slot, so the slot of an expired peer is reused by the next peer to join. The session creator gets slot `0`; if the host expires, slot `0` can be assigned to a later joiner.
 
 ### Receiving from the relay
 
@@ -239,7 +263,7 @@ Every packet forwarded by the relay is prefixed with a 4-byte sender index:
 [4…]    payload
 ```
 
-Use `senderIndex` to map incoming packets to the correct peer. The host is always `peerIndex 0`.
+Use `senderIndex` to map incoming packets to the correct peer. The session creator starts at `peerIndex 0` (see [Peer indices](#peer-indices)).
 
 ---
 

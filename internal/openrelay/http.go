@@ -102,14 +102,13 @@ func handleCreateSession(store *SessionStore) http.HandlerFunc {
 			return
 		}
 
-		if project.MaxSessions > 0 && store.activeSessionCount(project.ID) >= project.MaxSessions {
-			writeErr(w, http.StatusTooManyRequests, "max sessions reached for this project")
-			return
-		}
-
-		result, err := store.createSession(project.ID, project.MaxPeersPerSession, body.Code, body.Password, label, vis)
+		result, err := store.createSession(project.ID, project.MaxSessions, project.MaxPeersPerSession, body.Code, body.Password, label, vis)
 		if err == errConflict {
 			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err == errLimitReached {
+			writeErr(w, http.StatusTooManyRequests, err.Error())
 			return
 		}
 		if err != nil {

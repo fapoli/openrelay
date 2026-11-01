@@ -1,20 +1,28 @@
 package openrelay
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	PortHTTP     int
-	PortUDP      int
-	UDPBindHost  string
-	SessionTTLMs int64
+	PortHTTP      int
+	PortUDP       int
+	UDPBindHost   string
+	SessionTTLMs  int64
+	PeerTimeoutMs int64
+	// CleanupIntervalMs controls how often expired entries are freed from memory.
+	CleanupIntervalMs int64
 }
+
+const defaultCleanupIntervalMs = 300_000
 
 type Project struct {
 	ID                 string
@@ -25,14 +33,37 @@ type Project struct {
 
 func LoadConfig() Config {
 	return Config{
-		PortHTTP:     envInt("PORT_HTTP", 3000),
-		PortUDP:      envInt("PORT_UDP", 7777),
-		UDPBindHost:  envStr("UDP_BIND_HOST", "0.0.0.0"),
-		SessionTTLMs: int64(envInt("SESSION_TTL_MS", 300_000)),
+		PortHTTP:          envInt("PORT_HTTP", 3000),
+		PortUDP:           envInt("PORT_UDP", 7777),
+		UDPBindHost:       envStr("UDP_BIND_HOST", "0.0.0.0"),
+		SessionTTLMs:      int64(envInt("SESSION_TTL_MS", 300_000)),
+		PeerTimeoutMs:     int64(envInt("PEER_TIMEOUT_MS", 10_000)),
+		CleanupIntervalMs: int64(envInt("CLEANUP_INTERVAL_MS", defaultCleanupIntervalMs)),
 	}
 }
 
-func LoadProjects() map[string]*Project {
+// CleanupInterval returns the sweep interval, falling back to the default for
+// non-positive values (time.Tick returns nil for those, which would stop the sweep).
+func (c Config) CleanupInterval() time.Duration {
+	ms := c.CleanupIntervalMs
+	if ms <= 0 {
+		slog.Warn("invalid CLEANUP_INTERVAL_MS — using default", "value", ms, "default", defaultCleanupIntervalMs)
+		ms = defaultCleanupIntervalMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// LoadProjects reads projects.yaml and resolves each project's API key from the
+// environment. Any invalid or incomplete configuration is an error.
+func LoadProjects() (map[string]*Project, error) {
+	data, err := os.ReadFile("projects.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read projects.yaml: %w", err)
+	}
+	return parseProjects(data, os.Getenv)
+}
+
+func parseProjects(data []byte, getenv func(string) string) (map[string]*Project, error) {
 	type projectYAML struct {
 		ID                 string `yaml:"id"`
 		MaxSessions        int    `yaml:"maxSessions"`
@@ -42,29 +73,39 @@ func LoadProjects() map[string]*Project {
 		Projects []projectYAML `yaml:"projects"`
 	}
 
-	data, err := os.ReadFile("projects.yaml")
-	if err != nil {
-		slog.Warn("no projects.yaml found — no projects loaded")
-		return nil
-	}
-
 	var f file
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		slog.Error("failed to parse projects.yaml", "err", err)
-		return nil
+		return nil, fmt.Errorf("parse projects.yaml: %w", err)
+	}
+	if len(f.Projects) == 0 {
+		return nil, errors.New("projects.yaml defines no projects")
 	}
 
 	projects := make(map[string]*Project, len(f.Projects))
+	ids := make(map[string]bool, len(f.Projects))
 	for _, p := range f.Projects {
+		if p.ID == "" {
+			return nil, errors.New("project with empty id")
+		}
+		if ids[p.ID] {
+			return nil, fmt.Errorf("duplicate project id %q", p.ID)
+		}
+		ids[p.ID] = true
+
 		maxPeers := p.MaxPeersPerSession
 		if maxPeers == 0 {
 			maxPeers = 16
 		}
+		if maxPeers < 1 || maxPeers > maxPeersLimit {
+			return nil, fmt.Errorf("project %q: maxPeersPerSession %d out of range 1-%d", p.ID, maxPeers, maxPeersLimit)
+		}
 		envKey := strings.ToUpper(strings.ReplaceAll(p.ID, "-", "_")) + "_API_KEY"
-		apiKey := os.Getenv(envKey)
+		apiKey := getenv(envKey)
 		if apiKey == "" {
-			slog.Warn("no API key for project — skipping", "project", p.ID, "env", envKey)
-			continue
+			return nil, fmt.Errorf("project %q: %s is not set", p.ID, envKey)
+		}
+		if other, dup := projects[apiKey]; dup {
+			return nil, fmt.Errorf("projects %q and %q share the same API key", other.ID, p.ID)
 		}
 		projects[apiKey] = &Project{
 			ID:                 p.ID,
@@ -74,7 +115,7 @@ func LoadProjects() map[string]*Project {
 		}
 		slog.Info("project loaded", "project", p.ID)
 	}
-	return projects
+	return projects, nil
 }
 
 func envStr(key, def string) string {

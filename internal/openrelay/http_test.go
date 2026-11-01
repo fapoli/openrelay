@@ -131,3 +131,15 @@ func TestRoutes_getSession_404(t *testing.T) {
 		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
+
+func TestRoutes_createSession_429_limitReached(t *testing.T) {
+	_, h := testServer() // test project allows 20 sessions
+	for i := 0; i < 20; i++ {
+		if w := do(t, h, "POST", "/sessions", map[string]any{}, authHeader); w.Code != http.StatusCreated {
+			t.Fatalf("create %d: expected 201, got %d", i, w.Code)
+		}
+	}
+	if w := do(t, h, "POST", "/sessions", map[string]any{}, authHeader); w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+}

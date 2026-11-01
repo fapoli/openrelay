@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"net"
 	"testing"
 )
 
@@ -73,5 +74,17 @@ func TestBuildForwarded_emptyPayload(t *testing.T) {
 	}
 	if binary.BigEndian.Uint32(out) != 0 {
 		t.Errorf("expected zero sender index")
+	}
+}
+
+func TestListenRelay_portInUse(t *testing.T) {
+	taken, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer taken.Close()
+	if conn, err := ListenRelay(taken.LocalAddr().String()); err == nil {
+		conn.Close()
+		t.Error("expected error binding a port already in use")
 	}
 }
