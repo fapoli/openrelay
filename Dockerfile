@@ -1,26 +1,22 @@
-FROM node:22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . .
-RUN npm run build
+RUN CGO_ENABLED=0 go build -o openrelay ./cmd/openrelay
 
-FROM node:22-alpine
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/openrelay ./
 COPY projects.yaml ./
-
-ENV NODE_ENV=production
-ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+CMD ["./openrelay"]

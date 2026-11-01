@@ -13,16 +13,16 @@ A self-hosted UDP relay server for peer-to-peer multiplayer games. Players conne
 - **Project isolation** — multiple games on the same instance, each with its own API key and session limits
 - **No database** — entirely in-memory, zero infrastructure dependencies
 - **Stateless sessions** — sessions expire automatically after inactivity
-- **Self-hosted** — deploy anywhere that runs Node.js or Docker
+- **Self-hosted** — deploy anywhere that runs Go or Docker
 
 ---
 
 ## Tech Stack
 
-- **Node.js** + **TypeScript**
-- **Express** — HTTP signaling server
-- **dgram** — UDP relay (Node built-in, no extra dependencies)
-- **Zod** — Request validation
+- **Go**
+- **chi** — HTTP router
+- **net/http** — HTTP signaling server
+- **net (UDP)** — relay, standard library
 
 ---
 
@@ -64,8 +64,7 @@ So `example-game` → `EXAMPLE_GAME_API_KEY`. Your game client uses this key in 
 ### 3. Run
 
 ```bash
-npm install
-npm run dev
+go run ./cmd/openrelay
 ```
 
 The HTTP signaling server starts on port `3000` and the UDP relay on port `7777`.
@@ -74,12 +73,12 @@ The HTTP signaling server starts on port `3000` and the UDP relay on port `7777`
 
 ## Deployment
 
-The server is a single Node.js process with no external dependencies. Deploy it anywhere:
+The server is a single Go binary with no external dependencies. Deploy it anywhere:
 
 - [Fly.io](https://fly.io)
 - [Render](https://render.com)
 - [Railway](https://railway.app)
-- Any VPS with Docker or Node.js
+- Any VPS with Docker or Go
 
 ### Docker
 
@@ -104,7 +103,6 @@ Make sure to expose **both** the HTTP port (TCP) and the relay port (UDP).
 | `PORT_UDP`       | `7777`    | UDP relay port                       |
 | `UDP_BIND_HOST`  | `0.0.0.0` | UDP bind address                     |
 | `SESSION_TTL_MS` | `300000`  | Session expiry after inactivity (ms) |
-| `LOG_LEVEL`      | `info`    | Pino log level                       |
 
 ---
 
@@ -248,12 +246,10 @@ Use `senderIndex` to map incoming packets to the correct peer. The host is alway
 ## Development
 
 ```bash
-npm run dev        # Start with hot reload
-npm run build      # Compile TypeScript
-npm start          # Run compiled output
-npm run lint       # ESLint
-npm run lint:fix   # ESLint with auto-fix
-npm run format     # Prettier
+go run ./cmd/openrelay    # Run directly
+go build ./cmd/openrelay  # Compile binary
+go test ./...             # Run tests
+go vet ./...              # Static analysis
 ```
 
 ---
