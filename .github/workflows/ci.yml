@@ -11,19 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 20
-          cache: npm
+          go-version-file: go.mod
+          cache: true
 
-      - run: npm ci
+      - run: test -z "$(gofmt -l .)"
 
-      - run: npm run format:check
+      - run: go vet ./...
 
-      - run: npm run lint
+      - run: go test -race ./...
 
-      - run: npm run build
-
-      - run: npm test
-
-      - run: npm run test:integration
+      - run: go build ./...
