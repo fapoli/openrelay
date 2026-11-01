@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -64,9 +65,29 @@ func auth(store *SessionStore) func(http.Handler) http.Handler {
 	}
 }
 
+// The TCP peer address cannot be spoofed. A trusted header is only as good as the proxy
+// that sets it: use its last entry, and reject requests without it (they bypassed the proxy).
+func clientIP(r *http.Request, trustedHeader string) (netip.Addr, bool) {
+	if trustedHeader != "" {
+		v := r.Header.Get(trustedHeader)
+		if i := strings.LastIndex(v, ","); i >= 0 {
+			v = v[i+1:]
+		}
+		ip, err := netip.ParseAddr(strings.TrimSpace(v))
+		return ip.Unmap(), err == nil
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	return ap.Addr().Unmap(), err == nil
+}
+
 func handleCreateSession(store *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := projectFromCtx(r.Context())
+		ip, ok := clientIP(r, store.config.TrustedIPHeader)
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "cannot determine client IP")
+			return
+		}
 
 		var body struct {
 			Code       string `json:"code"`
@@ -102,7 +123,7 @@ func handleCreateSession(store *SessionStore) http.HandlerFunc {
 			return
 		}
 
-		result, err := store.createSession(project.ID, project.MaxSessions, project.MaxPeersPerSession, body.Code, body.Password, label, vis)
+		result, err := store.createSession(project.ID, project.MaxSessions, project.MaxPeersPerSession, body.Code, body.Password, label, vis, ip)
 		if err == errConflict {
 			writeErr(w, http.StatusConflict, err.Error())
 			return
@@ -130,13 +151,18 @@ func handleJoinSession(store *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := projectFromCtx(r.Context())
 		code := chi.URLParam(r, "code")
+		ip, ok := clientIP(r, store.config.TrustedIPHeader)
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "cannot determine client IP")
+			return
+		}
 
 		var body struct {
 			Password string `json:"password"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		result, err := store.joinSession(code, body.Password, project.ID)
+		result, err := store.joinSession(code, body.Password, project.ID, ip)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "invalid code or password")
 			return

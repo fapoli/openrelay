@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/fapoli/openrelay/internal/openrelay"
@@ -19,13 +21,12 @@ func main() {
 	}
 	store := openrelay.NewSessionStore(cfg, projects)
 
-	conn, err := openrelay.ListenRelay(fmt.Sprintf("%s:%d", cfg.UDPBindHost, cfg.PortUDP))
+	conn, err := openrelay.ListenRelay(net.JoinHostPort(cfg.UDPBindHost, strconv.Itoa(cfg.PortUDP)))
 	if err != nil {
 		fatal("UDP relay failed to start", err)
 	}
 	go openrelay.ServeRelay(store, conn)
 
-	// Expiry is enforced on every operation; this sweep only frees memory.
 	go func() {
 		for range time.Tick(cfg.CleanupInterval()) {
 			store.Cleanup()

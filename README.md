@@ -102,6 +102,12 @@ docker run -p 3000:3000 -p 7777:7777/udp \
 
 Make sure to expose **both** the HTTP port (TCP) and the relay port (UDP).
 
+### Behind a reverse proxy
+
+If the HTTP API sits behind a reverse proxy or load balancer, every request appears to come from the proxy. Set `TRUSTED_IP_HEADER` to the name of the header your proxy uses to pass the original client IP, e.g. `TRUSTED_IP_HEADER=X-Real-IP` or `TRUSTED_IP_HEADER=X-Forwarded-For`. Without it, every peer is compared against the proxy's IP and rejected.
+
+Only set it if your proxy **overwrites** that header with the IP it saw. If the proxy passes a client-sent value through, clients can forge their IP and bypass the check. If the header holds a list (as `X-Forwarded-For` does), the relay uses the last entry, the one your proxy added. Requests without the header are rejected with `400`, so clients can't bypass the proxy and reach the relay directly.
+
 ---
 
 ## Environment Variables
@@ -110,10 +116,11 @@ Make sure to expose **both** the HTTP port (TCP) and the relay port (UDP).
 | ---------------- | --------- | ------------------------------------ |
 | `PORT_HTTP`      | `3000`    | HTTP signaling port                  |
 | `PORT_UDP`       | `7777`    | UDP relay port                       |
-| `UDP_BIND_HOST`  | `0.0.0.0` | UDP bind address                     |
+| `UDP_BIND_HOST`  | _(empty)_ | UDP bind address; empty = all interfaces, IPv4 and IPv6 |
 | `SESSION_TTL_MS` | `300000`  | Session expiry after inactivity (ms) |
 | `PEER_TIMEOUT_MS`| `10000`   | Peer expiry after its last packet (ms) |
 | `CLEANUP_INTERVAL_MS` | `300000` | How often expired sessions/peers are freed from memory (ms) |
+| `TRUSTED_IP_HEADER` | _(empty)_ | Header your reverse proxy sets with the real client IP. Empty = use the TCP connection address. See [Source IP binding](#source-ip-binding) |
 
 ---
 
@@ -240,6 +247,20 @@ Every packet sent to the relay must begin with a 9-byte header:
 Set `targetPeerIndex` to the recipient's `peerIndex` for unicast, `0xFF` to broadcast to all peers in the session, or `0xFE` for a keepalive. A keepalive refreshes the sender and is not forwarded; its payload may be empty (the 9-byte header alone is valid).
 
 Peers are registered automatically on their first packet — no explicit handshake required.
+
+### Source IP binding
+
+Each peer is bound to the IP address of the HTTP request that created or joined it. UDP packets for that peer are accepted only from that IP; packets from any other IP are dropped and change nothing. The port may change at any time (NAT rebinding is fine).
+
+The HTTP IP comes from a completed TCP connection, so it cannot be forged. This prevents anyone from registering a peer with a spoofed UDP source address and using the relay to flood a third party.
+
+Players don't need to do anything. Requirements:
+
+- **Deployment:** the HTTP API and the UDP relay must be reachable over the same IP families. If the UDP relay is reachable over IPv4 only, the hostname clients use for HTTP must resolve to IPv4 only (A record, no AAAA). Otherwise a dual-stack client may join over IPv6, send UDP over IPv4, and have every packet dropped.
+- **Behind a proxy:** set `TRUSTED_IP_HEADER` (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
+- **Client integration:** make the HTTP calls and send UDP from the same process, so both use the same network. A player switching networks mid-session (e.g. Wi-Fi to mobile data) has to rejoin.
+
+Dropped packets caused by an IP mismatch are logged with both the join IP and the UDP source IP.
 
 ### Peer liveness
 

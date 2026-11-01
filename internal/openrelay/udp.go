@@ -29,9 +29,8 @@ func buildForwarded(senderIndex uint32, payload []byte) []byte {
 	return out
 }
 
-// ListenRelay binds the UDP relay socket.
 func ListenRelay(addr string) (net.PacketConn, error) {
-	conn, err := net.ListenPacket("udp4", addr)
+	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("bind UDP %s: %w", addr, err)
 	}
@@ -39,7 +38,6 @@ func ListenRelay(addr string) (net.PacketConn, error) {
 	return conn, nil
 }
 
-// ServeRelay reads and forwards packets until conn is closed.
 func ServeRelay(store *SessionStore, conn net.PacketConn) {
 	buf := make([]byte, 65535)
 	for {
@@ -58,10 +56,14 @@ func ServeRelay(store *SessionStore, conn net.PacketConn) {
 			continue
 		}
 
-		udpSrc := src.(*net.UDPAddr)
-		result := store.registerPeer(token, peerToken, udpSrc.IP.String(), udpSrc.Port, targetIndex)
-		if result == nil {
-			slog.Warn("unknown session or peer token, dropping", "token", token, "from", src)
+		result, err := store.registerPeer(token, peerToken, src.(*net.UDPAddr).AddrPort(), targetIndex)
+		var mismatch *ipMismatchError
+		if errors.As(err, &mismatch) {
+			slog.Warn("source IP does not match join IP, dropping", "joinIP", mismatch.joinIP, "from", src)
+			continue
+		}
+		if err != nil {
+			slog.Warn("unknown or expired session or peer, dropping", "token", token, "from", src)
 			continue
 		}
 
@@ -74,11 +76,7 @@ func ServeRelay(store *SessionStore, conn net.PacketConn) {
 		forwarded := buildForwarded(result.SenderIndex, payload)
 
 		for _, t := range result.Targets {
-			dest, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", t.address, t.port))
-			if err != nil {
-				continue
-			}
-			go conn.WriteTo(forwarded, dest)
+			go conn.WriteTo(forwarded, net.UDPAddrFromAddrPort(t))
 		}
 	}
 }
