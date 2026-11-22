@@ -58,7 +58,11 @@ type session struct {
 	projectID    string
 	lastActivity time.Time
 	maxPeers     int
-	peers        map[string]*peer
+	// peerTimeout is the project's own value (Project.PeerTimeout) if it set one, else the
+	// store's default — fixed at creation, so changing a project's config never affects a
+	// session already in progress.
+	peerTimeout time.Duration
+	peers       map[string]*peer
 }
 
 // SessionStore holds all sessions and their peers in memory.
@@ -88,8 +92,8 @@ func (ss *SessionStore) sessionExpired(s *session, now time.Time) bool {
 	return now.Sub(s.lastActivity) > ss.sessionTTL
 }
 
-func (ss *SessionStore) peerExpired(p *peer, now time.Time) bool {
-	return now.Sub(p.lastSeen) > ss.peerTimeout
+func (ss *SessionStore) peerExpired(s *session, p *peer, now time.Time) bool {
+	return now.Sub(p.lastSeen) > s.peerTimeout
 }
 
 func (ss *SessionStore) liveSession(code, projectID string, now time.Time) (*session, bool) {
@@ -103,7 +107,7 @@ func (ss *SessionStore) liveSession(code, projectID string, now time.Time) (*ses
 func (ss *SessionStore) livePeerCount(s *session, now time.Time) int {
 	n := 0
 	for _, p := range s.peers {
-		if !ss.peerExpired(p, now) {
+		if !ss.peerExpired(s, p, now) {
 			n++
 		}
 	}
@@ -113,7 +117,7 @@ func (ss *SessionStore) livePeerCount(s *session, now time.Time) int {
 func (ss *SessionStore) lowestFreeIndex(s *session, now time.Time) (uint32, bool) {
 	var used [maxPeersLimit]bool
 	for _, p := range s.peers {
-		if !ss.peerExpired(p, now) && p.index < maxPeersLimit {
+		if !ss.peerExpired(s, p, now) && p.index < maxPeersLimit {
 			used[p.index] = true
 		}
 	}
@@ -226,6 +230,10 @@ func (ss *SessionStore) createSessionLocked(project *Project, req newSession, no
 		pwHash = hashPassword(req.Password)
 	}
 
+	peerTimeout := ss.peerTimeout
+	if project.PeerTimeout > 0 {
+		peerTimeout = project.PeerTimeout
+	}
 	ss.sessions[code] = &session{
 		token:        token,
 		passwordHash: pwHash,
@@ -234,6 +242,7 @@ func (ss *SessionStore) createSessionLocked(project *Project, req newSession, no
 		projectID:    project.ID,
 		lastActivity: now,
 		maxPeers:     project.MaxPeersPerSession,
+		peerTimeout:  peerTimeout,
 		peers:        map[string]*peer{peerToken: {index: 0, joinIP: req.IP.Unmap(), lastSeen: now}},
 	}
 	ss.tokens[token] = code
@@ -415,7 +424,7 @@ func (ss *SessionStore) registerPeer(token uint32, peerToken string, src netip.A
 		return nil, errUnknownPeer
 	}
 	sender, ok := sess.peers[peerToken]
-	if !ok || ss.peerExpired(sender, now) {
+	if !ok || ss.peerExpired(sess, sender, now) {
 		return nil, errUnknownPeer
 	}
 	if src.Addr().Unmap() != sender.joinIP {
@@ -432,7 +441,7 @@ func (ss *SessionStore) registerPeer(token uint32, peerToken string, src netip.A
 
 	var targets []netip.AddrPort
 	for otherToken, other := range sess.peers {
-		if otherToken == peerToken || !other.addr.IsValid() || ss.peerExpired(other, now) {
+		if otherToken == peerToken || !other.addr.IsValid() || ss.peerExpired(sess, other, now) {
 			continue
 		}
 		if targetIndex != broadcast && other.index != uint32(targetIndex) {
@@ -459,7 +468,7 @@ func (ss *SessionStore) Cleanup() {
 			continue
 		}
 		for pt, p := range s.peers {
-			if ss.peerExpired(p, now) {
+			if ss.peerExpired(s, p, now) {
 				delete(s.peers, pt)
 			}
 		}

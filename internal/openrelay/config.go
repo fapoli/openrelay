@@ -32,6 +32,10 @@ type Project struct {
 	APIKey             string
 	MaxSessions        int
 	MaxPeersPerSession int
+	// PeerTimeout overrides the server's PEER_TIMEOUT_MS for this project's own sessions; 0 means
+	// use the server's default. A fast-paced game sending state many times a second can safely use
+	// a much shorter timeout than, say, a chat app, where a quiet human is normal, not a dropped peer.
+	PeerTimeout time.Duration
 }
 
 // LoadConfig reads the server settings from environment variables, using defaults for unset ones.
@@ -67,6 +71,7 @@ func parseProjects(data []byte, getenv func(string) string) (map[string]*Project
 		ID                 string `yaml:"id"`
 		MaxSessions        int    `yaml:"maxSessions"`
 		MaxPeersPerSession int    `yaml:"maxPeersPerSession"`
+		PeerTimeoutMs      int    `yaml:"peerTimeoutMs"`
 	}
 	type file struct {
 		Projects []projectYAML `yaml:"projects"`
@@ -98,6 +103,9 @@ func parseProjects(data []byte, getenv func(string) string) (map[string]*Project
 		if maxPeers < 1 || maxPeers > maxPeersLimit {
 			return nil, fmt.Errorf("project %q: maxPeersPerSession %d out of range 1-%d", entry.ID, maxPeers, maxPeersLimit)
 		}
+		if entry.PeerTimeoutMs < 0 {
+			return nil, fmt.Errorf("project %q: peerTimeoutMs must not be negative", entry.ID)
+		}
 		envKey := strings.ToUpper(strings.ReplaceAll(entry.ID, "-", "_")) + "_API_KEY"
 		apiKey := getenv(envKey)
 		if apiKey == "" {
@@ -111,6 +119,7 @@ func parseProjects(data []byte, getenv func(string) string) (map[string]*Project
 			APIKey:             apiKey,
 			MaxSessions:        entry.MaxSessions,
 			MaxPeersPerSession: maxPeers,
+			PeerTimeout:        time.Duration(entry.PeerTimeoutMs) * time.Millisecond,
 		}
 		slog.Info("project loaded", "project", entry.ID)
 	}

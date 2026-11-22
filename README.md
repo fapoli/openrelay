@@ -50,6 +50,7 @@ projects:
   - id: example-game
     maxPeersPerSession: 16 # max peers per session, 1–254 (default: 16)
     maxSessions: 50 # max concurrent sessions, 0 = unlimited (default: 0)
+    peerTimeoutMs: 2000 # overrides PEER_TIMEOUT_MS for this project's sessions (default: 0, meaning use it)
 ```
 
 ### 2. Set API keys
@@ -77,6 +78,7 @@ The server refuses to start (exit code `1`) if the configuration is unusable:
 - `projects.yaml` is missing, unparsable, or lists no projects
 - a project has an empty or duplicate `id`
 - `maxPeersPerSession` is outside `1–254`
+- `peerTimeoutMs` is negative
 - a project's API key environment variable is not set, or two projects share a key
 - the UDP relay port cannot be bound
 
@@ -327,6 +329,7 @@ Dropped packets caused by an IP mismatch are logged with both the join IP and th
 - After that, send something — game data or a keepalive — more often than `PEER_TIMEOUT_MS` (e.g. a keepalive every `PEER_TIMEOUT_MS / 3` while idle).
 - A peer silent for longer than `PEER_TIMEOUT_MS` expires immediately: it stops receiving traffic, its packets are dropped, and its slot is freed. Expiry is final — rejoin via `POST /sessions/:code/join` to get a new `peerToken`.
 - A session with no packets or joins for `SESSION_TTL_MS` expires the same way; its code becomes available again.
+- A project's own `peerTimeoutMs` in `projects.yaml` overrides `PEER_TIMEOUT_MS` for its sessions, set once at creation. A fast-paced game sending state many times a second can safely use a much shorter timeout than the server-wide default, so a player who quit normally stops looking "present" almost immediately instead of lingering for up to `PEER_TIMEOUT_MS` — without affecting other projects on the same relay, such as a chat app where a quiet human is normal, not a dropped peer. Whatever value is used, the client must still send *something* more often than it, including while merely waiting in a lobby or otherwise not actively exchanging game data — an aggressive override is only safe if the client's own keepalive cadence is safely shorter than it in every reachable state, not just during active gameplay.
 
 Expired sessions and peers are ignored immediately; their memory is reclaimed by a background sweep every `CLEANUP_INTERVAL_MS` (default 5 minutes). The interval only affects memory, not behavior.
 

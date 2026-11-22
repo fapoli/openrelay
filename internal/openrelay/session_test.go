@@ -234,6 +234,24 @@ func expireSession(ss *SessionStore, code string) {
 	ss.sessions[code].lastActivity = time.Now().Add(-ss.sessionTTL - time.Millisecond)
 }
 
+func TestCreateSession_perProjectPeerTimeoutOverridesStoreDefault(t *testing.T) {
+	ss := newTestSessions() // store default peerTimeout is 10s
+	fastProject := &Project{ID: "fast", MaxPeersPerSession: 4, PeerTimeout: 2 * time.Second}
+	if _, err := ss.createSession(fastProject, newSession{Code: "AAAAAA", Visibility: private, IP: testIP}); err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	joined, err := ss.joinSession("AAAAAA", "", "fast", testIP)
+	if err != nil {
+		t.Fatalf("joinSession: %v", err)
+	}
+	// Stale by 3s: past the project's own 2s override, but well under the store's 10s default —
+	// proving peerExpired reads the session's own timeout, not the store's.
+	ss.sessions["AAAAAA"].peers[joined.PeerToken].lastSeen = time.Now().Add(-3 * time.Second)
+	if n := ss.livePeerCount(ss.sessions["AAAAAA"], time.Now()); n != 1 {
+		t.Errorf("expected the project's 2s override to have expired the joined peer, live count was %d", n)
+	}
+}
+
 func TestJoinSession_reusesLowestFreeIndex(t *testing.T) {
 	ss := newTestSessions()
 	createTestSession(t, ss, "AAAAAA")

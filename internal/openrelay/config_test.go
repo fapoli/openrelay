@@ -10,6 +10,7 @@ func TestParseProjects_valid(t *testing.T) {
 projects:
   - id: max
     maxPeersPerSession: 254
+    peerTimeoutMs: 2000
   - id: default
 `)
 	env := map[string]string{"MAX_API_KEY": "k1", "DEFAULT_API_KEY": "k2"}
@@ -20,8 +21,14 @@ projects:
 	if p := projects["k1"]; p == nil || p.MaxPeersPerSession != 254 {
 		t.Errorf("expected project with 254 peers, got %+v", p)
 	}
+	if p := projects["k1"]; p == nil || p.PeerTimeout != 2*time.Second {
+		t.Errorf("expected peerTimeoutMs 2000 to become 2s, got %+v", p)
+	}
 	if p := projects["k2"]; p == nil || p.MaxPeersPerSession != 16 {
 		t.Errorf("expected default of 16 peers, got %+v", p)
+	}
+	if p := projects["k2"]; p == nil || p.PeerTimeout != 0 {
+		t.Errorf("expected no peerTimeoutMs to mean 0 (use the server default), got %+v", p)
 	}
 }
 
@@ -29,14 +36,15 @@ func TestParseProjects_errors(t *testing.T) {
 	env := map[string]string{"A_API_KEY": "k", "B_API_KEY": "k", "C_API_KEY": "other"}
 	getenv := func(k string) string { return env[k] }
 	cases := map[string]string{
-		"invalid yaml":    "projects: [",
-		"no projects":     "projects: []",
-		"empty id":        "projects:\n  - maxSessions: 1",
-		"duplicate id":    "projects:\n  - id: c\n  - id: c",
-		"too many peers":  "projects:\n  - id: c\n    maxPeersPerSession: 255",
-		"negative peers":  "projects:\n  - id: c\n    maxPeersPerSession: -1",
-		"missing api key": "projects:\n  - id: missing",
-		"shared api key":  "projects:\n  - id: a\n  - id: b",
+		"invalid yaml":          "projects: [",
+		"no projects":           "projects: []",
+		"empty id":              "projects:\n  - maxSessions: 1",
+		"duplicate id":          "projects:\n  - id: c\n  - id: c",
+		"too many peers":        "projects:\n  - id: c\n    maxPeersPerSession: 255",
+		"negative peers":        "projects:\n  - id: c\n    maxPeersPerSession: -1",
+		"negative peer timeout": "projects:\n  - id: c\n    peerTimeoutMs: -1",
+		"missing api key":       "projects:\n  - id: missing",
+		"shared api key":        "projects:\n  - id: a\n  - id: b",
 	}
 	for name, yml := range cases {
 		t.Run(name, func(t *testing.T) {
