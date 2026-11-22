@@ -97,6 +97,41 @@ func TestRoutes_joinSession_404_wrongPassword(t *testing.T) {
 	}
 }
 
+func TestRoutes_quickJoin_201_createsWhenNoneOpen(t *testing.T) {
+	_, h := testServer()
+	w := do(t, h, "POST", "/quickjoin", map[string]any{"label": "quick match"}, authHeader)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d", w.Code)
+	}
+	var body map[string]any
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["created"] != true || body["peerIndex"].(float64) != 0 {
+		t.Errorf("expected a freshly created session, got %v", body)
+	}
+}
+
+func TestRoutes_quickJoin_200_joinsOpenSession(t *testing.T) {
+	_, h := testServer()
+	do(t, h, "POST", "/sessions", map[string]any{"code": "ABCDEF", "visibility": "public"}, authHeader)
+	w := do(t, h, "POST", "/quickjoin", map[string]any{}, authHeader)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["created"] != false || body["code"] != "ABCDEF" {
+		t.Errorf("expected to join OPENUP, got %v", body)
+	}
+}
+
+func TestRoutes_quickJoin_401(t *testing.T) {
+	_, h := testServer()
+	w := do(t, h, "POST", "/quickjoin", map[string]any{}, nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
 func TestRoutes_listSessions_onlyPublic(t *testing.T) {
 	_, h := testServer()
 	do(t, h, "POST", "/sessions", map[string]any{"code": "PUBLS3", "visibility": "public"}, authHeader)

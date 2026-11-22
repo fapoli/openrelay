@@ -174,6 +174,40 @@ Response:
 
 `password` is the password the host sent, or `null` if none was set; the server never generates one. Without a password, anyone with the code can join. Share `code` and `password` with your players out-of-band. Use `sessionToken` and `peerToken` to connect to the UDP relay.
 
+### Quick join
+
+```
+POST /quickjoin
+Content-Type: application/json
+```
+
+| Field   | Type                  | Required | Description                                                      |
+| ------- | --------------------- | -------- | ------------------------------------------------------------------ |
+| `label` | string (max 64 chars) | No       | Human-readable name, used only if this call ends up creating a session |
+
+Joins an open public session for the project — any one with a free slot and no password, not
+necessarily the oldest or fullest — or creates a new public session if none has room. There is no
+way to ask for a specific session; for that, use create and join with a code instead. Returns
+`429 Too Many Requests` if the project has reached `maxSessions` and no open session was found to
+join.
+
+Response:
+
+```json
+{
+  "code": "ROOM01",
+  "sessionToken": 2947183621,
+  "peerToken": "a1b2c3d4",
+  "peerIndex": 0,
+  "created": true
+}
+```
+
+`created` is `true` only when this call made a new session (`201 Created`) rather than joining an
+existing one (`200 OK`) — `peerIndex` alone isn't a reliable way to tell, since quick-joining a
+session whose original host has gone silent can also land on index 0. A session created this way
+has no password and is public, so later quick-join calls (yours or anyone else's) can find it.
+
 ### Join a session
 
 ```

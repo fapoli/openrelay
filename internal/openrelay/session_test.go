@@ -116,6 +116,74 @@ func TestJoinSession_wrongProject(t *testing.T) {
 	}
 }
 
+func TestQuickJoin_joinsOpenPublicSession(t *testing.T) {
+	ss := newTestSessions()
+	created, _ := ss.createSession(testProject, newSession{Code: "AAAAAA", Visibility: public, IP: testIP})
+	r, err := ss.quickJoin(testProject, quickJoinRequest{IP: testIP})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Created {
+		t.Error("expected Created=false when joining an existing session")
+	}
+	if r.Code != "AAAAAA" || r.SessionToken != created.SessionToken {
+		t.Errorf("expected to join AAAAAA, got %+v", r)
+	}
+	if r.PeerIndex != 1 {
+		t.Errorf("expected peer index 1, got %d", r.PeerIndex)
+	}
+}
+
+func TestQuickJoin_createsWhenNoOpenSession(t *testing.T) {
+	ss := newTestSessions()
+	r, err := ss.quickJoin(testProject, quickJoinRequest{Label: "quick match"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Created {
+		t.Error("expected Created=true when no open session exists")
+	}
+	if r.PeerIndex != 0 {
+		t.Errorf("expected peer index 0 for a newly created session, got %d", r.PeerIndex)
+	}
+	sessions := ss.publicSessions("proj")
+	if len(sessions) != 1 || sessions[0].Label != "quick match" {
+		t.Errorf("expected the created session to be public with the given label, got %+v", sessions)
+	}
+}
+
+func TestQuickJoin_skipsFullPrivateAndPasswordProtectedSessions(t *testing.T) {
+	ss := newTestSessions()
+	ss.createSession(testProject, newSession{Code: "PRIV01", Visibility: private, IP: testIP})
+	ss.createSession(testProject, newSession{Code: "PASS01", Visibility: public, Password: "secret1", IP: testIP})
+	full, _ := ss.createSession(testProject, newSession{Code: "FULL01", Visibility: public, IP: testIP})
+	for i := 0; i < testProject.MaxPeersPerSession-1; i++ {
+		ss.joinSession(full.Code, "", "proj", testIP)
+	}
+
+	r, err := ss.quickJoin(testProject, quickJoinRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Created {
+		t.Errorf("expected a fresh session since PRIV01/PASS01/FULL01 are all ineligible, got %+v", r)
+	}
+}
+
+func TestQuickJoin_otherProjectSessionsIgnored(t *testing.T) {
+	ss := newTestSessions()
+	otherProject := &Project{ID: "other-proj", MaxPeersPerSession: 4}
+	ss.createSession(otherProject, newSession{Code: "AAAAAA", Visibility: public, IP: testIP})
+
+	r, err := ss.quickJoin(testProject, quickJoinRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Created || r.Code == "AAAAAA" {
+		t.Errorf("expected a new session for proj, not the other project's AAAAAA, got %+v", r)
+	}
+}
+
 func TestPublicSessions_filtersPrivate(t *testing.T) {
 	ss := newTestSessions()
 	ss.createSession(testProject, newSession{Code: "PUBL22", Label: "Open", Visibility: public, IP: testIP})

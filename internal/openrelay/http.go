@@ -69,6 +69,7 @@ func Routes(sessions *SessionStore, projects map[string]*Project, opts HTTPOptio
 		r.Use(resolveClientIP(opts.TrustedIPHeader))
 		limit := rateLimit(opts.RateLimitPerMin)
 		r.With(limit, requireAPIKey(projects)).Post("/sessions", handleCreateSession(sessions))
+		r.With(limit, requireAPIKey(projects)).Post("/quickjoin", handleQuickJoin(sessions))
 		r.With(requireAPIKey(projects)).Get("/sessions", handleListSessions(sessions))
 		r.With(limit, requireAPIKey(projects)).Post("/sessions/{code}/join", handleJoinSession(sessions))
 		r.With(limit, requireAPIKey(projects)).Get("/sessions/{code}", handleGetSession(sessions))
@@ -235,6 +236,42 @@ func handleJoinSession(sessions *SessionStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func handleQuickJoin(sessions *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Label string `json:"label"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); isBodyTooLarge(err) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+
+		label := strings.TrimSpace(body.Label)
+		if len(label) > 64 {
+			writeErr(w, http.StatusUnprocessableEntity, "label too long")
+			return
+		}
+
+		result, err := sessions.quickJoin(projectFromCtx(r.Context()), quickJoinRequest{
+			Label: label,
+			IP:    clientIPFromCtx(r.Context()),
+		})
+		if errors.Is(err, errLimitReached) {
+			writeErr(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "failed to quick-join")
+			return
+		}
+		status := http.StatusOK
+		if result.Created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, result)
 	}
 }
 
