@@ -196,11 +196,12 @@ Content-Type: application/json
 | ------- | --------------------- | -------- | ------------------------------------------------------------------ |
 | `label` | string (max 64 chars) | No       | Human-readable name, used only if this call ends up creating a session |
 
-Joins an open public session for the project — any one with a free slot and no password, not
-necessarily the oldest or fullest — or creates a new public session if none has room. There is no
-way to ask for a specific session; for that, use create and join with a code instead. Returns
-`429 Too Many Requests` if the project has reached `maxSessions` and no open session was found to
-join.
+Joins an open public session for the project — any one with a free slot, no password, and at least
+one live peer, not necessarily the oldest or fullest — or creates a new public session if none
+qualifies. Sessions whose peers have all gone silent (ghosts that linger until `SESSION_TTL`) are
+skipped, so a caller is never matched alone into a dead session. There is no way to ask for a
+specific session; for that, use create and join with a code instead. Returns `429 Too Many
+Requests` if the project has reached `maxSessions` and no open session was found to join.
 
 Response:
 

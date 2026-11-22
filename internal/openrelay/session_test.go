@@ -170,6 +170,38 @@ func TestQuickJoin_skipsFullPrivateAndPasswordProtectedSessions(t *testing.T) {
 	}
 }
 
+func TestQuickJoin_skipsGhostSessionWithNoLivePeers(t *testing.T) {
+	ss := newTestSessions()
+	ghost, _ := ss.createSession(testProject, newSession{Code: "GHOST1", Visibility: public, IP: testIP})
+	expirePeer(ss, "GHOST1", ghost.PeerToken) // creator went silent; session lingers, 0 live peers
+
+	r, err := ss.quickJoin(testProject, quickJoinRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Created {
+		t.Errorf("expected a fresh session rather than joining the empty ghost, got %+v", r)
+	}
+	if r.Code == "GHOST1" {
+		t.Error("quick-join landed in the ghost session instead of creating a new one")
+	}
+}
+
+func TestQuickJoin_joinsSessionWithALivePeerOverAGhost(t *testing.T) {
+	ss := newTestSessions()
+	ghost, _ := ss.createSession(testProject, newSession{Code: "GHOST2", Visibility: public, IP: testIP})
+	expirePeer(ss, "GHOST2", ghost.PeerToken)
+	ss.createSession(testProject, newSession{Code: "ALIVE1", Visibility: public, IP: testIP}) // live host
+
+	r, err := ss.quickJoin(testProject, quickJoinRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Created || r.Code != "ALIVE1" {
+		t.Errorf("expected to join the live session ALIVE1, not the ghost or a new one, got %+v", r)
+	}
+}
+
 func TestQuickJoin_otherProjectSessionsIgnored(t *testing.T) {
 	ss := newTestSessions()
 	otherProject := &Project{ID: "other-proj", MaxPeersPerSession: 4}

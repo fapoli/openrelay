@@ -327,6 +327,13 @@ func (ss *SessionStore) quickJoin(project *Project, req quickJoinRequest) (*Quic
 		if ss.sessionExpired(sess, now) {
 			continue
 		}
+		// Skip a session whose peers have all gone silent: it is a ghost (its creator died and
+		// timed out, but the session itself lingers until sessionTTL). Quick-joining one would put
+		// the caller alone in a dead session, thinking it had found an opponent. Match only into a
+		// session someone is actually present in, else fall through and create a fresh one.
+		if ss.livePeerCount(sess, now) == 0 {
+			continue
+		}
 		index, peerToken, err := ss.addPeerLocked(sess, req.IP, now)
 		if err != nil {
 			continue
