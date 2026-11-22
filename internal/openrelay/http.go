@@ -56,6 +56,7 @@ func NewHTTPServer(addr string, sessions *SessionStore, projects map[string]*Pro
 // Routes returns the handler for the HTTP signaling API.
 func Routes(sessions *SessionStore, projects map[string]*Project, opts HTTPOptions) http.Handler {
 	r := chi.NewRouter()
+	r.Use(cors)
 	r.Use(useClientIPAsRemoteAddr(opts.TrustedIPHeader))
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -76,6 +77,23 @@ func Routes(sessions *SessionStore, projects map[string]*Project, opts HTTPOptio
 	})
 
 	return r
+}
+
+// cors lets any browser-based client read responses: the API key, not same-origin/cookies, is
+// what actually protects these endpoints, so there is nothing for a restrictive origin policy to
+// add. Native clients (curl, Node, Unity, a terminal app) never enforce CORS at all; this only
+// matters to a client that is itself a browser page, such as an Electron game's renderer process.
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func limitBody(next http.Handler) http.Handler {

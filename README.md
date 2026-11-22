@@ -130,6 +130,15 @@ Only set it if your proxy **overwrites** that header with the IP it saw. If the 
 
 All endpoints require `Authorization: Bearer <apiKey>`.
 
+### CORS
+
+Every response carries `Access-Control-Allow-Origin: *`, and `OPTIONS` preflight requests get a
+bare `204`. A browser-based client (a web build, or an Electron game's renderer process, which is
+a real browser under the hood) needs this to read the response at all; a native client — curl,
+Node, Unity, a terminal app — never enforces CORS in the first place, so this only matters to the
+former. It is safe to leave permissive: the API key is what actually authorizes a request, not the
+caller's origin, so there is nothing for a stricter origin policy to add.
+
 ### Rate limits
 
 Create, join and lookup share one limit per client IP (`RATE_LIMIT_PER_MIN`, default 10 per minute). It stops password guessing on join, probing for session codes, and mass session creation. Requests over the limit get `429 Too Many Requests` with a `Retry-After` header. Unauthenticated requests count too, so a bad API key doesn't bypass the limit. Listing sessions and `/health` are not limited.

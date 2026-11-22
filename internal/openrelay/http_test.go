@@ -36,6 +36,25 @@ var testProjects = map[string]*Project{
 	"test-key": {ID: "proj", APIKey: "test-key", MaxSessions: 20, MaxPeersPerSession: 4},
 }
 
+func TestRoutes_cors_preflight(t *testing.T) {
+	_, h := testServer()
+	w := do(t, h, "OPTIONS", "/sessions", nil, nil)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
+	}
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %q", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestRoutes_cors_headerOnRealRequest(t *testing.T) {
+	_, h := testServer()
+	w := do(t, h, "GET", "/health", nil, nil)
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %q", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestRoutes_createSession_401(t *testing.T) {
 	_, h := testServer()
 	w := do(t, h, "POST", "/sessions", map[string]any{}, nil)
