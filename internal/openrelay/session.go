@@ -251,11 +251,14 @@ func (ss *SessionStore) createSessionLocked(project *Project, req newSession, no
 	return &CreateResult{Code: code, Password: optional(req.Password), SessionToken: token, PeerToken: peerToken, PeerIndex: 0}, nil
 }
 
-// JoinResult is returned to a client that joined a session.
+// JoinResult is returned to a client that joined a session. Peers is how many live peers the
+// session has now, including the caller, so the client can tell whether it is alone (wait for
+// others) or the session is ready to play, without guessing from peerIndex.
 type JoinResult struct {
 	SessionToken uint32 `json:"sessionToken"`
 	PeerToken    string `json:"peerToken"`
 	PeerIndex    uint32 `json:"peerIndex"`
+	Peers        int    `json:"peers"`
 }
 
 func (ss *SessionStore) joinSession(code, password, projectID string, ip netip.Addr) (*JoinResult, error) {
@@ -276,7 +279,7 @@ func (ss *SessionStore) joinSession(code, password, projectID string, ip netip.A
 	}
 
 	slog.Info("peer joined", "code", code, "peerIndex", index)
-	return &JoinResult{SessionToken: sess.token, PeerToken: peerToken, PeerIndex: index}, nil
+	return &JoinResult{SessionToken: sess.token, PeerToken: peerToken, PeerIndex: index, Peers: ss.livePeerCount(sess, now)}, nil
 }
 
 // addPeerLocked allocates a free slot on sess for a new peer; the caller must hold ss.mu.
@@ -295,14 +298,17 @@ func (ss *SessionStore) addPeerLocked(sess *session, ip netip.Addr, now time.Tim
 }
 
 // QuickJoinResult is returned by quickJoin: a session this peer is now in, either one it just
-// joined or, if none for this project had room, one it just created. Created is true only in the
-// latter case — unlike joinSession, peerIndex alone is not a reliable signal, since a peer
-// quick-joining a session whose original host has gone silent can land on index 0 too.
+// joined or, if none for this project had room, one it just created. Peers is how many live peers
+// the session has now, including the caller: 1 means the caller is alone (it should wait for
+// others to arrive), more means the session already has company. The client decides whether to
+// wait or start from Peers, not from Created — Created is only informational, since joining a
+// lingering empty session and creating a fresh one both leave the caller alone (Peers == 1).
 type QuickJoinResult struct {
 	Code         string `json:"code"`
 	SessionToken uint32 `json:"sessionToken"`
 	PeerToken    string `json:"peerToken"`
 	PeerIndex    uint32 `json:"peerIndex"`
+	Peers        int    `json:"peers"`
 	Created      bool   `json:"created"`
 }
 
@@ -311,15 +317,21 @@ type quickJoinRequest struct {
 	IP    netip.Addr
 }
 
-// quickJoin puts the caller into an open public session for the project (any one with a free
-// slot, not necessarily the oldest or fullest), or creates a new public session if none has room.
-// Both branches run under the same lock as every other session mutation, so there is no race
-// between checking a session has room and claiming the slot.
+// quickJoin puts the caller into the fullest open public session for the project that still has a
+// free slot — filling partly-full sessions before starting new ones, which generalizes to any
+// peer count — or creates a new public session if none has room. An empty, still-lingering session
+// is the least preferred target (it sorts last on live-peer count) but is reused rather than left
+// to waste when nothing better exists; either way the returned Peers count tells the caller
+// whether anyone else is actually there. All of this runs under the same lock as every other
+// session mutation, so there is no race between choosing a session and claiming its slot.
 func (ss *SessionStore) quickJoin(project *Project, req quickJoinRequest) (*QuickJoinResult, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	now := time.Now()
+	var best *session
+	bestCode := ""
+	bestPeers := -1
 	for code, sess := range ss.sessions {
 		if sess.projectID != project.ID || sess.visibility != public || sess.passwordHash != "" {
 			continue
@@ -327,19 +339,21 @@ func (ss *SessionStore) quickJoin(project *Project, req quickJoinRequest) (*Quic
 		if ss.sessionExpired(sess, now) {
 			continue
 		}
-		// Skip a session whose peers have all gone silent: it is a ghost (its creator died and
-		// timed out, but the session itself lingers until sessionTTL). Quick-joining one would put
-		// the caller alone in a dead session, thinking it had found an opponent. Match only into a
-		// session someone is actually present in, else fall through and create a fresh one.
-		if ss.livePeerCount(sess, now) == 0 {
-			continue
+		live := ss.livePeerCount(sess, now)
+		if live >= sess.maxPeers {
+			continue // full
 		}
-		index, peerToken, err := ss.addPeerLocked(sess, req.IP, now)
-		if err != nil {
-			continue
+		if live > bestPeers {
+			best, bestCode, bestPeers = sess, code, live
 		}
-		slog.Info("peer quick-joined", "project", project.ID, "code", code, "peerIndex", index)
-		return &QuickJoinResult{Code: code, SessionToken: sess.token, PeerToken: peerToken, PeerIndex: index}, nil
+	}
+
+	if best != nil {
+		index, peerToken, err := ss.addPeerLocked(best, req.IP, now)
+		if err == nil {
+			slog.Info("peer quick-joined", "project", project.ID, "code", bestCode, "peerIndex", index)
+			return &QuickJoinResult{Code: bestCode, SessionToken: best.token, PeerToken: peerToken, PeerIndex: index, Peers: ss.livePeerCount(best, now)}, nil
+		}
 	}
 
 	result, err := ss.createSessionLocked(project, newSession{Visibility: public, Label: req.Label, IP: req.IP}, now)
@@ -352,6 +366,7 @@ func (ss *SessionStore) quickJoin(project *Project, req quickJoinRequest) (*Quic
 		SessionToken: result.SessionToken,
 		PeerToken:    result.PeerToken,
 		PeerIndex:    result.PeerIndex,
+		Peers:        1,
 		Created:      true,
 	}, nil
 }

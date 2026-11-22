@@ -170,7 +170,7 @@ func TestQuickJoin_skipsFullPrivateAndPasswordProtectedSessions(t *testing.T) {
 	}
 }
 
-func TestQuickJoin_skipsGhostSessionWithNoLivePeers(t *testing.T) {
+func TestQuickJoin_reusesLoneGhostAndReportsAlone(t *testing.T) {
 	ss := newTestSessions()
 	ghost, _ := ss.createSession(testProject, newSession{Code: "GHOST1", Visibility: public, IP: testIP})
 	expirePeer(ss, "GHOST1", ghost.PeerToken) // creator went silent; session lingers, 0 live peers
@@ -179,26 +179,48 @@ func TestQuickJoin_skipsGhostSessionWithNoLivePeers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !r.Created {
-		t.Errorf("expected a fresh session rather than joining the empty ghost, got %+v", r)
+	if r.Code != "GHOST1" {
+		t.Errorf("expected the empty ghost to be reused rather than a new session created, got %+v", r)
 	}
-	if r.Code == "GHOST1" {
-		t.Error("quick-join landed in the ghost session instead of creating a new one")
+	if r.Peers != 1 {
+		t.Errorf("expected Peers=1 (caller is alone in the reused ghost), got %d", r.Peers)
 	}
 }
 
-func TestQuickJoin_joinsSessionWithALivePeerOverAGhost(t *testing.T) {
+func TestQuickJoin_prefersFullestSessionWithLivePeers(t *testing.T) {
 	ss := newTestSessions()
 	ghost, _ := ss.createSession(testProject, newSession{Code: "GHOST2", Visibility: public, IP: testIP})
-	expirePeer(ss, "GHOST2", ghost.PeerToken)
-	ss.createSession(testProject, newSession{Code: "ALIVE1", Visibility: public, IP: testIP}) // live host
+	expirePeer(ss, "GHOST2", ghost.PeerToken)                                                 // 0 live peers
+	ss.createSession(testProject, newSession{Code: "ALIVE1", Visibility: public, IP: testIP}) // 1 live peer
 
 	r, err := ss.quickJoin(testProject, quickJoinRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.Created || r.Code != "ALIVE1" {
-		t.Errorf("expected to join the live session ALIVE1, not the ghost or a new one, got %+v", r)
+		t.Errorf("expected to join the fuller live session ALIVE1, not the ghost or a new one, got %+v", r)
+	}
+	if r.Peers != 2 {
+		t.Errorf("expected Peers=2 after joining the live session, got %d", r.Peers)
+	}
+}
+
+func TestQuickJoin_fillsFullestOfSeveralJoinable(t *testing.T) {
+	ss := newTestSessions()                                                                   // testProject MaxPeersPerSession = 4
+	ss.createSession(testProject, newSession{Code: "ONEPLR", Visibility: public, IP: testIP}) // 1 live
+	ss.createSession(testProject, newSession{Code: "THREEP", Visibility: public, IP: testIP})
+	ss.joinSession("THREEP", "", "proj", testIP)
+	ss.joinSession("THREEP", "", "proj", testIP) // THREEP now 3 live, still room (max 4)
+
+	r, err := ss.quickJoin(testProject, quickJoinRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Code != "THREEP" {
+		t.Errorf("expected to fill the fuller session THREEP (3/4) before ONEPLR (1/4), got %+v", r)
+	}
+	if r.Peers != 4 {
+		t.Errorf("expected Peers=4 after topping off THREEP, got %d", r.Peers)
 	}
 }
 

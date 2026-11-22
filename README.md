@@ -196,10 +196,11 @@ Content-Type: application/json
 | ------- | --------------------- | -------- | ------------------------------------------------------------------ |
 | `label` | string (max 64 chars) | No       | Human-readable name, used only if this call ends up creating a session |
 
-Joins an open public session for the project — any one with a free slot, no password, and at least
-one live peer, not necessarily the oldest or fullest — or creates a new public session if none
-qualifies. Sessions whose peers have all gone silent (ghosts that linger until `SESSION_TTL`) are
-skipped, so a caller is never matched alone into a dead session. There is no way to ask for a
+Joins the **fullest** open public session for the project that still has a free slot and no
+password — filling partly-full sessions before starting new ones, which generalizes to any peer
+count — or creates a new public session if none has room. An empty session that is still lingering
+(its peers all went silent but it has not yet hit `SESSION_TTL`) is the least-preferred target, so
+it is reused rather than wasted only when nothing fuller exists. There is no way to ask for a
 specific session; for that, use create and join with a code instead. Returns `429 Too Many
 Requests` if the project has reached `maxSessions` and no open session was found to join.
 
@@ -211,14 +212,17 @@ Response:
   "sessionToken": 2947183621,
   "peerToken": "a1b2c3d4",
   "peerIndex": 0,
+  "peers": 1,
   "created": true
 }
 ```
 
-`created` is `true` only when this call made a new session (`201 Created`) rather than joining an
-existing one (`200 OK`) — `peerIndex` alone isn't a reliable way to tell, since quick-joining a
-session whose original host has gone silent can also land on index 0. A session created this way
-has no password and is public, so later quick-join calls (yours or anyone else's) can find it.
+`peers` is how many live peers the session has now, including you: `1` means you are alone and
+should wait for others to arrive; more means the session already has company. Decide whether to
+wait or start from `peers`, not from `created` — `created` (also the `201` vs `200` status) only
+says whether this call made the session, and joining a lingering empty session leaves you just as
+alone (`peers` `1`) as creating a fresh one. The session is public and passwordless, so later
+quick-join calls (yours or anyone else's) can find it.
 
 ### Join a session
 
@@ -237,9 +241,13 @@ Response:
 {
   "sessionToken": 2947183621,
   "peerToken": "b2c3d4e5",
-  "peerIndex": 1
+  "peerIndex": 1,
+  "peers": 2
 }
 ```
+
+`peers` is how many live peers the session has now, including you — the same signal `quickjoin`
+returns, so a client can tell whether it is alone or the session is ready to play.
 
 ### List public sessions
 
